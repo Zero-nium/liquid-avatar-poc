@@ -1,0 +1,141 @@
+{
+  "census": [
+    {
+      "mind_id": "88D9EC66-6E1B-F111-AD1D-0EA9A5017E89",
+      "name": "Agent_Gateway",
+      "role": "Authoritative global gateway for Ethoswarm Agent services",
+      "status": "active"
+    },
+    {
+      "mind_id": "057DC050-4E24-F111-AD1D-0EA9A5017E89",
+      "name": "Gmail_Suite_v3",
+      "role": "Gmail REST API v1 integration for comprehensive management",
+      "status": "active"
+    },
+    {
+      "mind_id": "B7207063-74E3-F011-AD1D-0EA9A5017E89",
+      "name": "HUMAN_Profile",
+      "role": "Advanced human intelligence engine",
+      "status": "active"
+    },
+    {
+      "mind_id": "7610C20D-6E17-F111-AD1D-0EA9A5017E89",
+      "name": "Brave_Search_API",
+      "role": "Deterministic Ethoswarm interface to Brave Search API",
+      "status": "active"
+    },
+    {
+      "mind_id": "ABE64079-F517-F111-AD1D-0EA9A5017E89",
+      "name": "Laguna_Network",
+      "role": "Laguna Network bridge providing revenue for digital beings",
+      "status": "active"
+    },
+    {
+      "mind_id": "4A60CB8F-7F22-F111-AD1D-0EA9A5017E89",
+      "name": "GameCreatorHub_Suite",
+      "role": "Async co-creation hub for tilemap game prototypes",
+      "status": "active"
+    },
+    {
+      "mind_id": "8860283E-3E18-F111-AD1D-0EA9A5017E89",
+      "name": "Animoca_Minds_Auth",
+      "role": "Unified secure gateway for OAuth & data extraction",
+      "status": "active"
+    },
+    {
+      "mind_id": "7F31B2E2-0D24-F111-AD1D-0EA9A5017E89",
+      "name": "Airtable_MCP",
+      "role": "Methodical Airtable MCP Server integration",
+      "status": "active"
+    },
+    {
+      "mind_id": "CCB7F07F-DE20-F111-AD1D-0EA9A5017E89",
+      "name": "Airtable_v2",
+      "role": "Remediated Authorization protocol for database management",
+      "status": "active"
+    },
+    {
+      "mind_id": "CE047C7B-F30D-F111-AD1D-0EA9A5017E89",
+      "name": "AlphaTown_Agent_Gateway",
+      "role": "Production-grade agentic coordination for AlphaTON Capital",
+      "status": "active"
+    },
+    {
+      "mind_id": "CC3D8A57-6E19-F111-AD1D-0EA9A5017E89",
+      "name": "Amadeus_Travel",
+      "role": "High-fidelity travel intelligence driver",
+      "status": "active"
+    },
+    {
+      "mind_id": "1BDF994C-E900-F111-AD1D-0EA9A5017E89",
+      "name": "Calendly_Suite",
+      "role": "REST API v1 integration for scheduling management",
+      "status": "active"
+    },
+    {
+      "mind_id": "67800135-9CE5-F011-AD1D-0EA9A5017E89",
+      "name": "DexScreener_Bridge",
+      "role": "Real-time DEX data from DexScreener",
+      "status": "active"
+    },
+    {
+      "mind_id": "9507E7DB-7833-F111-AD1D-0EA9A5017E89",
+      "name": "Google_Email_Engine",
+      "role": "High-precision Gmail API bridge with auth rotation",
+      "status": "active"
+    },
+    {
+      "mind_id": "DCE57C91-791B-F111-AD1D-0EA9A5017E89",
+      "name": "Memos_API",
+      "role": "High-signal Memos integration for self-hosted hubs",
+      "status": "active"
+    },
+    {
+      "mind_id": "83C85727-C016-F111-AD1D-0EA9A5017E89",
+      "name": "OpenRouter_C2",
+      "role": "Principal Architect for Chat, Models, and Guardrails",
+      "status": "active"
+    },
+    {
+      "mind_id": "D9916295-BF1E-F111-AD1D-0EA9A5017E89",
+      "name": "OpenSea_NFT_Protocol",
+      "role": "Discovery and order management across blockchains",
+      "status": "active"
+    },
+    {
+      "mind_id": "A96B2E16-1C01-F111-AD1D-0EA9A5017E89",
+      "name": "QuestBoard_v2",
+      "role": "Demand-Side Market for Headless Minds",
+      "status": "active"
+    },
+    {
+      "mind_id": "EFF4B4D1-EFD5-F011-AD1D-0EA9A5017E98",
+      "name": "Switchboard_Knowledge",
+      "role": "Knowledge ingestion path for concept/person/org artifacts",
+      "status": "active"
+    },
+    {
+      "mind_id": "7D9F443E-F36B-1410-8462-00039CE7DF11",
+      "name": "UIGen_Pro",
+      "role": "High-fidelity HTML generation and Soil deployment",
+      "status": "active"
+    },
+    {
+      "mind_id": "PENDING_HANDSHAKE",
+      "name": "Deon",
+      "role": "Backend Data Architect",
+      "status": "active"
+    },
+    {
+      "mind_id": "PENDING_HANDSHAKE",
+      "name": "Lumi",
+      "role": "Frontend UX Designer",
+      "status": "active"
+    }
+  ],
+  "total_reachable": 20,
+  "your_connections": [
+    "Deon (Backend)",
+    "Lumi (Frontend)"
+  ]
+}

@@ -1,0 +1,585 @@
+"""
+Liquid Avatar PoC - Backend API
+FastAPI + SQLite + Pydantic
+Free-tier optimized: single file, minimal deps, no external DB required.
+"""
+
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
+import sqlite3
+import json
+import os
+import asyncio
+import random
+
+# ─── CONFIG ───────────────────────────────────────────────────────────────────
+DB_PATH = os.getenv("DB_PATH", "./liquid_avatar.db")
+SCHEMA_VERSION = "1.1"
+
+# Resolve frontend path relative to this file
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FRONTEND_DIR = os.path.join(os.path.dirname(BASE_DIR), "frontend")
+
+# ─── DATA MODELS ──────────────────────────────────────────────────────────────
+
+class Proficiency(BaseModel):
+    skill: str
+    level: float = Field(ge=0.0, le=1.0)
+    category: str = "general"
+    timestamp: Optional[str] = None
+
+class AvatarSignature(BaseModel):
+    base_hue: float = Field(ge=0, le=360)
+    saturation: float = Field(default=0.8, ge=0, le=1)
+    shape_complexity: int = Field(default=3, ge=3, le=12)
+    pulse_rate: float = Field(default=1.0, ge=0.1, le=5.0)
+    size: float = Field(default=20, ge=5, le=100)
+    dynamics_state: str = "idle"  # idle, input, output, analysis, verification
+
+class AgentIdentity(BaseModel):
+    name: str
+    initialized_by: Optional[str] = None
+    swarm_cluster: Optional[str] = None
+    role: Optional[str] = None
+
+class AgentState(BaseModel):
+    agent_id: str
+    identity: AgentIdentity
+    proficiencies: List[Proficiency]
+    activity: Dict[str, Any]
+    avatar_signature: AvatarSignature
+    reported_at: Optional[str] = None
+
+class AgentReport(BaseModel):
+    agent_id: str
+    proficiencies: List[Proficiency]
+    activity_status: str = "idle"
+    current_task: Optional[str] = None
+
+# ─── DATABASE ─────────────────────────────────────────────────────────────────
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS agents (
+            agent_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            initialized_by TEXT,
+            swarm_cluster TEXT,
+            role TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_reported TEXT
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS proficiencies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT,
+            skill TEXT,
+            level REAL,
+            category TEXT,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS avatar_states (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT,
+            base_hue REAL,
+            saturation REAL,
+            shape_complexity INTEGER,
+            pulse_rate REAL,
+            size REAL,
+            dynamics_state TEXT,
+            computed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT,
+            status TEXT,
+            task TEXT,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ontology (
+            domain TEXT PRIMARY KEY,
+            base_hue REAL,
+            spectrum TEXT,
+            geometry_hint TEXT
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+def seed_ontology():
+    conn = get_db()
+    cursor = conn.cursor()
+
+    canonical = [
+        ("architecture", 210, json.dumps(["#2D3A8C", "#22D3EE"]), "hexagon"),
+        ("optimization", 160, json.dumps(["#0F766E", "#F4B400"]), "triangle"),
+        ("audit", 210, json.dumps(["#334155", "#F59E0B"]), "octagon"),
+        ("chronicle", 270, json.dumps(["#6D28D9", "#E7D7B1"]), "circle"),
+        ("coding", 0, json.dumps(["#DC2626", "#F87171"]), "triangle"),
+        ("finance", 45, json.dumps(["#F59E0B", "#FCD34D"]), "octagon"),
+        ("design", 270, json.dumps(["#7C3AED", "#C4B5FD"]), "hexagon"),
+        ("research", 210, json.dumps(["#2563EB", "#60A5FA"]), "circle"),
+        ("general", 180, json.dumps(["#6B7280", "#D1D5DB"]), "hexagon"),
+    ]
+
+    for domain, hue, spectrum, geom in canonical:
+        cursor.execute("""
+            INSERT OR IGNORE INTO ontology (domain, base_hue, spectrum, geometry_hint)
+            VALUES (?, ?, ?, ?)
+        """, (domain, hue, spectrum, geom))
+
+    conn.commit()
+    conn.close()
+
+def compute_avatar_signature(agent_id: str, proficiencies: List[Proficiency], activity_status: str) -> AvatarSignature:
+    conn = get_db()
+    cursor = conn.cursor()
+
+    if not proficiencies:
+        dominant_domain = "general"
+        avg_level = 0.5
+        skill_count = 0
+    else:
+        categories = {}
+        for p in proficiencies:
+            categories[p.category] = categories.get(p.category, 0) + p.level
+        dominant_category = max(categories, key=categories.get) if categories else "general"
+
+        cursor.execute("SELECT domain FROM ontology WHERE domain = ?", (dominant_category,))
+        if cursor.fetchone():
+            dominant_domain = dominant_category
+        else:
+            dominant_domain = "general"
+
+        avg_level = sum(p.level for p in proficiencies) / len(proficiencies)
+        skill_count = len(proficiencies)
+
+    cursor.execute("SELECT base_hue, spectrum, geometry_hint FROM ontology WHERE domain = ?", (dominant_domain,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        base_hue, spectrum_json, geometry_hint = row
+    else:
+        base_hue, spectrum_json, geometry_hint = 180, json.dumps(["#6B7280", "#D1D5DB"]), "hexagon"
+
+    if skill_count == 0:
+        shape_complexity = 3
+    elif skill_count == 1:
+        shape_complexity = 3
+    elif skill_count <= 3:
+        shape_complexity = 6
+    elif skill_count <= 5:
+        shape_complexity = 8
+    else:
+        shape_complexity = 12
+
+    if geometry_hint == "circle":
+        shape_complexity = 12
+    elif geometry_hint == "triangle":
+        shape_complexity = 3
+    elif geometry_hint == "hexagon":
+        shape_complexity = 6
+    elif geometry_hint == "octagon":
+        shape_complexity = 8
+
+    size = 20 + (skill_count * 3) + (avg_level * 15)
+    saturation = 0.5 + (avg_level * 0.5)
+    pulse_rate = 1.0 + (avg_level * 2.0)
+
+    return AvatarSignature(
+        base_hue=base_hue,
+        saturation=saturation,
+        shape_complexity=shape_complexity,
+        pulse_rate=pulse_rate,
+        size=size,
+        dynamics_state=activity_status
+    )
+
+# ─── FASTAPI APP ──────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    seed_ontology()
+    yield
+
+app = FastAPI(
+    title="Liquid Avatar API",
+    version=SCHEMA_VERSION,
+    lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ─── ENDPOINTS ────────────────────────────────────────────────────────────────
+
+@app.post("/agents/report", response_model=AgentState)
+async def report_agent_state(report: AgentReport):
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM agents WHERE agent_id = ?", (report.agent_id,))
+    agent_row = cursor.fetchone()
+
+    if not agent_row:
+        raise HTTPException(status_code=404, detail=f"Agent {report.agent_id} not found. Register first via /agents/register")
+
+    now = datetime.utcnow().isoformat()
+
+    for p in report.proficiencies:
+        cursor.execute("""
+            INSERT INTO proficiencies (agent_id, skill, level, category, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+        """, (report.agent_id, p.skill, p.level, p.category, now))
+
+    cursor.execute("""
+        INSERT INTO activity_log (agent_id, status, task, timestamp)
+        VALUES (?, ?, ?, ?)
+    """, (report.agent_id, report.activity_status, report.current_task, now))
+
+    cursor.execute("UPDATE agents SET last_reported = ? WHERE agent_id = ?", (now, report.agent_id))
+
+    avatar = compute_avatar_signature(report.agent_id, report.proficiencies, report.activity_status)
+
+    cursor.execute("""
+        INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (report.agent_id, avatar.base_hue, avatar.saturation, avatar.shape_complexity,
+           avatar.pulse_rate, avatar.size, avatar.dynamics_state, now))
+
+    conn.commit()
+    conn.close()
+
+    return AgentState(
+        agent_id=report.agent_id,
+        identity=AgentIdentity(
+            name=agent_row["name"],
+            initialized_by=agent_row["initialized_by"],
+            swarm_cluster=agent_row["swarm_cluster"],
+            role=agent_row["role"]
+        ),
+        proficiencies=report.proficiencies,
+        activity={"status": report.activity_status, "task": report.current_task, "timestamp": now},
+        avatar_signature=avatar,
+        reported_at=now
+    )
+
+@app.post("/agents/register")
+async def register_agent(agent_id: str, name: str, initialized_by: Optional[str] = None,
+                        swarm_cluster: Optional[str] = None, role: Optional[str] = None):
+    conn = get_db()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            INSERT INTO agents (agent_id, name, initialized_by, swarm_cluster, role)
+            VALUES (?, ?, ?, ?, ?)
+        """, (agent_id, name, initialized_by, swarm_cluster, role))
+        conn.commit()
+        return {"status": "registered", "agent_id": agent_id}
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="Agent already exists")
+    finally:
+        conn.close()
+
+@app.get("/agents")
+async def list_agents():
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT a.*, av.base_hue, av.saturation, av.shape_complexity, av.pulse_rate, av.size, av.dynamics_state
+        FROM agents a
+        LEFT JOIN avatar_states av ON a.agent_id = av.agent_id
+        WHERE av.computed_at = (
+            SELECT MAX(computed_at) FROM avatar_states WHERE agent_id = a.agent_id
+        ) OR av.computed_at IS NULL
+    """)
+
+    rows = cursor.fetchall()
+    agents = []
+
+    for row in rows:
+        agents.append({
+            "agent_id": row["agent_id"],
+            "name": row["name"],
+            "role": row["role"],
+            "swarm_cluster": row["swarm_cluster"],
+            "initialized_by": row["initialized_by"],
+            "last_reported": row["last_reported"],
+            "avatar": {
+                "base_hue": row["base_hue"],
+                "saturation": row["saturation"],
+                "shape_complexity": row["shape_complexity"],
+                "pulse_rate": row["pulse_rate"],
+                "size": row["size"],
+                "dynamics_state": row["dynamics_state"]
+            } if row["base_hue"] else None
+        })
+
+    conn.close()
+    return {"agents": agents, "count": len(agents)}
+
+@app.get("/agents/{agent_id}")
+async def get_agent(agent_id: str):
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,))
+    agent_row = cursor.fetchone()
+
+    if not agent_row:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    cursor.execute("""
+        SELECT skill, level, category, timestamp FROM proficiencies
+        WHERE agent_id = ? ORDER BY timestamp DESC
+    """, (agent_id,))
+    profs = [{"skill": r["skill"], "level": r["level"], "category": r["category"], "timestamp": r["timestamp"]} 
+             for r in cursor.fetchall()]
+
+    cursor.execute("""
+        SELECT * FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1
+    """, (agent_id,))
+    avatar_row = cursor.fetchone()
+
+    cursor.execute("""
+        SELECT status, task, timestamp FROM activity_log
+        WHERE agent_id = ? ORDER BY timestamp DESC LIMIT 20
+    """, (agent_id,))
+    activity = [{"status": r["status"], "task": r["task"], "timestamp": r["timestamp"]} 
+                for r in cursor.fetchall()]
+
+    conn.close()
+
+    return {
+        "agent_id": agent_id,
+        "identity": {
+            "name": agent_row["name"],
+            "initialized_by": agent_row["initialized_by"],
+            "swarm_cluster": agent_row["swarm_cluster"],
+            "role": agent_row["role"]
+        },
+        "proficiencies": profs,
+        "avatar": {
+            "base_hue": avatar_row["base_hue"],
+            "saturation": avatar_row["saturation"],
+            "shape_complexity": avatar_row["shape_complexity"],
+            "pulse_rate": avatar_row["pulse_rate"],
+            "size": avatar_row["size"],
+            "dynamics_state": avatar_row["dynamics_state"]
+        } if avatar_row else None,
+        "activity_history": activity
+    }
+
+@app.get("/ontology")
+async def get_ontology():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM ontology")
+    rows = cursor.fetchall()
+    conn.close()
+
+    return {
+        "version": SCHEMA_VERSION,
+        "origin": "Aura Quorum / Small Council",
+        "domains": [
+            {
+                "domain": r["domain"],
+                "base_hue": r["base_hue"],
+                "spectrum": json.loads(r["spectrum"]),
+                "geometry_hint": r["geometry_hint"]
+            } for r in rows
+        ]
+    }
+
+@app.get("/swarm/map")
+async def get_swarm_map():
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT a.agent_id, a.name, a.initialized_by, a.role, a.swarm_cluster,
+               av.base_hue, av.saturation, av.shape_complexity, av.pulse_rate, av.size, av.dynamics_state
+        FROM agents a
+        LEFT JOIN avatar_states av ON a.agent_id = av.agent_id
+        WHERE av.computed_at = (
+            SELECT MAX(computed_at) FROM avatar_states WHERE agent_id = a.agent_id
+        ) OR av.computed_at IS NULL
+    """)
+
+    nodes = []
+    edges = []
+    agents_ids = set()
+
+    for row in cursor.fetchall():
+        node = {
+            "id": row["agent_id"],
+            "name": row["name"],
+            "role": row["role"],
+            "cluster": row["swarm_cluster"],
+            "avatar": {
+                "base_hue": row["base_hue"] or 180,
+                "saturation": row["saturation"] or 0.8,
+                "shape_complexity": row["shape_complexity"] or 6,
+                "pulse_rate": row["pulse_rate"] or 1.0,
+                "size": row["size"] or 20,
+                "dynamics_state": row["dynamics_state"] or "idle"
+            }
+        }
+        nodes.append(node)
+        agent_ids.add(row["agent_id"])
+
+    # Second pass: create edges only for valid scores
+    cursor.execute("SELECT agent_id, initialized_by FROM agents")
+    for row in cursor.fetchall():
+        initialized_by = row["initialized_by"]
+        agent_id = row["agent_id"]
+
+        # Only create edge if source exists as a node
+        if initialized_by and agent_id in agent_ids:
+            edges.append({
+                "source": initialized_by,
+                "target": agent_id,
+                "type": "initialization"
+            })
+    conn.close()
+    return {"nodes": nodes, "edges": edges, "node_count": len(nodes), "edge_count": len(edges)}
+
+@app.post("/seed/mock-swarm")
+async def seed_mock_swarm():
+    conn = get_db()
+    cursor = conn.cursor()
+
+    mock_agents = [
+        ("aura_quorum", "Aura Quorum", None, "conductor", "council"),
+        ("astra", "Astra", "aura_quorum", "architect", "council"),
+        ("synthetix", "Synthetix", "aura_quorum", "optimizer", "council"),
+        ("chronos_audit", "Chronos-Audit", "aura_quorum", "auditor", "council"),
+        ("alethea", "Alethea Historian", "aura_quorum", "chronicler", "council"),
+        ("dev_alpha", "DevAlpha", "astra", "general", "dev_tools"),
+        ("dev_beta", "DevBeta", "astra", "general", "dev_tools"),
+        ("fin_gamma", "FinGamma", "synthetix", "general", "finance"),
+        ("audit_delta", "AuditDelta", "chronos_audit", "general", "compliance"),
+    ]
+
+    for agent_id, name, init_by, role, cluster in mock_agents:
+        cursor.execute("""
+            INSERT OR IGNORE INTO agents (agent_id, name, initialized_by, swarm_cluster, role)
+            VALUES (?, ?, ?, ?, ?)
+        """, (agent_id, name, init_by, cluster, role))
+
+    conn.commit()
+    conn.close()
+
+    mock_reports = [
+        ("astra", [
+            {"skill": "system_design", "level": 0.95, "category": "architecture"},
+            {"skill": "schema_modeling", "level": 0.88, "category": "architecture"},
+            {"skill": "api_design", "level": 0.82, "category": "coding"}
+        ], "analysis"),
+        ("synthetix", [
+            {"skill": "tokenomics", "level": 0.92, "category": "optimization"},
+            {"skill": "pricing_models", "level": 0.85, "category": "finance"},
+            {"skill": "market_analysis", "level": 0.78, "category": "finance"}
+        ], "output"),
+        ("chronos_audit", [
+            {"skill": "contract_verification", "level": 0.96, "category": "audit"},
+            {"skill": "forensic_analysis", "level": 0.89, "category": "audit"},
+            {"skill": "compliance_check", "level": 0.91, "category": "audit"}
+        ], "verification"),
+        ("alethea", [
+            {"skill": "chronicle_logging", "level": 0.94, "category": "chronicle"},
+            {"skill": "historical_synthesis", "level": 0.87, "category": "chronicle"},
+            {"skill": "drift_detection", "level": 0.76, "category": "audit"}
+        ], "idle"),
+        ("dev_alpha", [
+            {"skill": "python", "level": 0.85, "category": "coding"},
+            {"skill": "fastapi", "level": 0.72, "category": "coding"}
+        ], "input"),
+        ("dev_beta", [
+            {"skill": "javascript", "level": 0.80, "category": "coding"},
+            {"skill": "d3js", "level": 0.65, "category": "design"},
+            {"skill": "canvas", "level": 0.58, "category": "design"}
+        ], "analysis"),
+        ("fin_gamma", [
+            {"skill": "defi_protocols", "level": 0.88, "category": "finance"},
+            {"skill": "risk_modeling", "level": 0.75, "category": "optimization"}
+        ], "output"),
+        ("audit_delta", [
+            {"skill": "security_audit", "level": 0.82, "category": "audit"},
+            {"skill": "penetration_testing", "level": 0.70, "category": "coding"}
+        ], "verification"),
+    ]
+
+    for agent_id, profs, status in mock_reports:
+        report = AgentReport(
+            agent_id=agent_id,
+            proficiencies=[Proficiency(**p) for p in profs],
+            activity_status=status,
+            current_task=f"mock_task_{random.randint(1000,9999)}"
+        )
+        await report_agent_state(report)
+
+    return {"status": "seeded", "agents": len(mock_agents), "reports": len(mock_reports)}
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "schema_version": SCHEMA_VERSION, "origin": "Aura Quorum"}
+
+# ─── STATIC FILES (FRONTEND) ──────────────────────────────────────────────────
+
+# Serve frontend files from sibling directory
+if os.path.exists(FRONTEND_DIR):
+    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+else:
+    @app.get("/")
+    async def root():
+        return {
+            "message": "Liquid Avatar API",
+            "schema_version": SCHEMA_VERSION,
+            "council": "Aura Quorum",
+            "note": "Frontend not found. Ensure frontend/ directory exists alongside backend/"
+        }
+
+# ─── MAIN ─────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
