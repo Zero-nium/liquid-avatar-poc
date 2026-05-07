@@ -37,7 +37,8 @@ function getAgentColor(agent) {
 function getAgentGlow(agent) {
     const hue = agent.avatar.base_hue;
     const sat = Math.round(agent.avatar.saturation * 100);
-    return hslToHex(hue, sat, 70);
+    // Return desaturated glow for minimal aesthetic
+    return hslToHex(hue, Math.min(sat, 40), 75);
 }
 
 // ─── GEOMETRY GENERATORS ──────────────────────────────────────────────────────
@@ -321,7 +322,14 @@ function selectAgent(agent) {
     const color = getAgentColor(agent);
 
     details.innerHTML = `
-        <div style="margin-bottom: 12px;">
+        <div style="margin-bottom: var(--space-sm);">
+            <div class="agent name" style="color": ${color}:">
+                ${agent.name}
+            </div>
+            <div class="agent-meta">
+                ${agent.role} · ${agent.cluster || 'no cluster'}
+            </div>
+        </div>
             <div style="font-size: 16px; font-weight: 600; color: ${color}; margin-bottom: 4px;">
                 ${agent.name}
             </div>

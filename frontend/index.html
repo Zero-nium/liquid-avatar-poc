@@ -1,264 +1,400 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Liquid Avatar — Swarm Visualization</title>
-    <script src="https://d3js.org/d3.v7.min.js"></script>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Liquid Avatar — Swarm Visualization</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@600;700&display=swap" rel="stylesheet">
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    :root {
+      /* PSP Medical Minimalism Palette */
+      --bg-primary: #FFFFFF;
+      --bg-surface: #F5F5F7;
+      --bg-panel: #EEEEF0;
+      --text-primary: #111111;
+      --text-secondary: #666666;
+      --text-muted: #999999;
+      --accent: #0066FF; /* Limited use - only for critical interactions */
+      --border: #DDDDDF;
+      --glow: rgba(0, 102, 255, 0.1);
+      
+      /* Typography */
+      --font-mono: 'IBM Plex Mono', monospace;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      
+      /* Spacing */
+      --space-xs: 4px;
+      --space-sm: 8px;
+      --space-md: 16px;
+      --space-lg: 24px;
+      --space-xl: 32px;
+      
+      /* Borders */
+      --border-radius: 0; /* Sharp edges per Designers Republic */
+      --border-width: 1px;
+    }
 
-        body {
-            background: #0a0a0f;
-            color: #e2e8f0;
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            overflow: hidden;
-        }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.5;
+      overflow: hidden;
+      height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+    }
 
-        #app {
-            display: flex;
-            height: 100vh;
-        }
+    /* ─── HEADER ───────────────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--space-md) var(--space-lg);
+      border-bottom: var(--border-width) solid var(--border);
+      background: var(--bg-surface);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
 
-        #sidebar {
-            width: 320px;
-            background: rgba(15, 23, 42, 0.95);
-            border-right: 1px solid rgba(148, 163, 184, 0.1);
-            padding: 24px;
-            overflow-y: auto;
-            backdrop-filter: blur(10px);
-        }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+      font-weight: 600;
+    }
 
-        #sidebar h1 {
-            font-size: 18px;
-            font-weight: 600;
-            color: #22d3ee;
-            margin-bottom: 4px;
-            letter-spacing: 0.5px;
-        }
+    .brand-dot {
+      width: 8px;
+      height: 8px;
+      background: var(--accent);
+      border-radius: 50%;
+    }
 
-        #sidebar .subtitle {
-            font-size: 11px;
-            color: #64748b;
-            margin-bottom: 24px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
+    .header-actions {
+      display: flex;
+      gap: var(--space-sm);
+    }
 
-        .panel {
-            background: rgba(30, 41, 59, 0.5);
-            border: 1px solid rgba(148, 163, 184, 0.08);
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 16px;
-        }
+    .btn {
+      background: transparent;
+      border: var(--border-width) solid var(--border);
+      color: var(--text-primary);
+      padding: var(--space-xs) var(--space-sm);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      cursor: pointer;
+      transition: all 0.1s ease;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
 
-        .panel h3 {
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: #94a3b8;
-            margin-bottom: 12px;
-        }
+    .btn:hover {
+      background: var(--bg-panel);
+      border-color: var(--text-primary);
+    }
 
-        .stat-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 6px 0;
-            border-bottom: 1px solid rgba(148, 163, 184, 0.05);
-            font-size: 13px;
-        }
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
 
-        .stat-row:last-child { border-bottom: none; }
-        .stat-label { color: #64748b; }
-        .stat-value { color: #e2e8f0; font-weight: 500; }
+    .btn-primary:hover {
+      opacity: 0.9;
+    }
 
-        #canvas-container {
-            flex: 1;
-            position: relative;
-            overflow: hidden;
-        }
+    /* ─── MAIN LAYOUT ──────────────────────────────────────────────────── */
+    main {
+      display: grid;
+      grid-template-columns: 280px 1fr 280px;
+      gap: var(--space-md);
+      padding: var(--space-md);
+      overflow: hidden;
+    }
 
-        #swarm-canvas {
-            width: 100%;
-            height: 100%;
-            cursor: grab;
-        }
+    /* ─── SIDEBARS ─────────────────────────────────────────────────────── */
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-md);
+      background: var(--bg-surface);
+      border: var(--border-width) solid var(--border);
+      padding: var(--space-md);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      overflow-y: auto;
+    }
 
-        #swarm-canvas:active { cursor: grabbing; }
+    .sidebar-title {
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      padding-bottom: var(--space-sm);
+      border-bottom: var(--border-width) solid var(--border);
+      margin-bottom: var(--space-sm);
+    }
 
-        #controls {
-            position: absolute;
-            top: 20px;
-            right: 20px;
-            display: flex;
-            gap: 8px;
-        }
+    /* Stats Grid */
+    .stat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-sm);
+    }
 
-        .ctrl-btn {
-            background: rgba(15, 23, 42, 0.9);
-            border: 1px solid rgba(148, 163, 184, 0.15);
-            color: #e2e8f0;
-            padding: 8px 16px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 12px;
-            transition: all 0.2s;
-            backdrop-filter: blur(10px);
-        }
+    .stat-item {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-xs);
+    }
 
-        .ctrl-btn:hover {
-            background: rgba(34, 211, 238, 0.1);
-            border-color: rgba(34, 211, 238, 0.3);
-        }
+    .stat-label {
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      font-size: 9px;
+      letter-spacing: 0.5px;
+    }
 
-        #tooltip {
-            position: absolute;
-            background: rgba(15, 23, 42, 0.95);
-            border: 1px solid rgba(148, 163, 184, 0.15);
-            border-radius: 8px;
-            padding: 12px;
-            pointer-events: none;
-            opacity: 0;
-            transition: opacity 0.2s;
-            font-size: 12px;
-            max-width: 240px;
-            backdrop-filter: blur(10px);
-            z-index: 100;
-        }
+    .stat-value {
+      font-weight: 600;
+      font-size: 14px;
+    }
 
-        #tooltip.visible { opacity: 1; }
+    /* Ontology Legend */
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+      padding: var(--space-xs) 0;
+    }
 
-        .tooltip-header {
-            font-weight: 600;
-            color: #22d3ee;
-            margin-bottom: 8px;
-            font-size: 13px;
-        }
+    .legend-color {
+      width: 16px;
+      height: 16px;
+      border: var(--border-width) solid var(--border);
+      flex-shrink: 0;
+    }
 
-        #legend {
-            position: absolute;
-            bottom: 20px;
-            left: 20px;
-            background: rgba(15, 23, 42, 0.9);
-            border: 1px solid rgba(148, 163, 184, 0.1);
-            border-radius: 12px;
-            padding: 16px;
-            font-size: 11px;
-            backdrop-filter: blur(10px);
-        }
+    /* Dynamics Legend */
+    .dynamics-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 6px;
+      border: var(--border-width) solid var(--border);
+      border-radius: 0;
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-family: var(--font-mono);
+    }
 
-        .legend-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 6px;
-        }
+    .dynamics-idle { border-color: var(--text-muted); color: var(--text-muted); }
+    .dynamics-input { border-color: #00AA88; color: #00AA88; }
+    .dynamics-output { border-color: #FF6B35; color: #FF6B35; }
+    .dynamics-analysis { border-color: var(--accent); color: var(--accent); }
+    .dynamics-verification { border-color: #9333EA; color: #9333EA; }
 
-        .legend-color {
-            width: 12px;
-            height: 12px;
-            border-radius: 3px;
-        }
+    /* Agent Details Panel */
+    .agent-details {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-sm);
+    }
 
-        #loading {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            text-align: center;
-            color: #64748b;
-        }
+    .agent-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
 
-        .spinner {
-            width: 32px;
-            height: 32px;
-            border: 2px solid rgba(34, 211, 238, 0.2);
-            border-top-color: #22d3ee;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 12px;
-        }
+    .agent-meta {
+      color: var(--text-secondary);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
 
-        @keyframes spin { to { transform: rotate(360deg); } }
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      padding: var(--space-xs) 0;
+      border-bottom: var(--border-width) dashed var(--border);
+      font-size: 10px;
+    }
 
-        .dynamics-badge {
-            display: inline-block;
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-size: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
+    .stat-row:last-child { border-bottom: none; }
 
-        .dynamics-idle { background: rgba(107, 114, 128, 0.2); color: #9ca3af; }
-        .dynamics-input { background: rgba(34, 211, 238, 0.2); color: #22d3ee; }
-        .dynamics-output { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
-        .dynamics-analysis { background: rgba(139, 92, 246, 0.2); color: #8b5cf6; }
-        .dynamics-verification { background: rgba(16, 185, 129, 0.2); color: #10b981; }
-    </style>
+    .stat-label { color: var(--text-secondary); }
+    .stat-value { font-weight: 500; }
+
+    /* ─── CANVAS ───────────────────────────────────────────────────────── */
+    #canvas-container {
+      position: relative;
+      background: var(--bg-primary);
+      border: var(--border-width) solid var(--border);
+      overflow: hidden;
+    }
+
+    #swarm-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Tooltip */
+    #tooltip {
+      position: fixed;
+      background: var(--bg-primary);
+      border: var(--border-width) solid var(--border);
+      padding: var(--space-sm);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.1s ease;
+      z-index: 100;
+      max-width: 200px;
+      box-shadow: 0 4px 12px var(--glow);
+    }
+
+    #tooltip.visible { opacity: 1; }
+
+    .tooltip-header {
+      font-weight: 600;
+      margin-bottom: var(--space-xs);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* Loading State */
+    #loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    /* ─── FOOTER ───────────────────────────────────────────────────────── */
+    footer {
+      padding: var(--space-sm) var(--space-lg);
+      border-top: var(--border-width) solid var(--border);
+      background: var(--bg-surface);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .footer-link {
+      color: var(--text-secondary);
+      text-decoration: none;
+    }
+
+    .footer-link:hover { color: var(--accent); }
+
+    /* ─── RESPONSIVE ───────────────────────────────────────────────────── */
+    @media (max-width: 1200px) {
+      main { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      #canvas-container { grid-column: 1 / -1; }
+    }
+  </style>
 </head>
 <body>
-    <div id="app">
-        <div id="sidebar">
-            <h1>Liquid Avatar</h1>
-            <div class="subtitle">Swarm Visualization v1.1</div>
-
-            <div class="panel">
-                <h3>Selected Agent</h3>
-                <div id="agent-details">
-                    <p style="color: #64748b; font-size: 13px;">Click an avatar to inspect</p>
-                </div>
-            </div>
-
-            <div class="panel">
-                <h3>Swarm Stats</h3>
-                <div class="stat-row">
-                    <span class="stat-label">Total Agents</span>
-                    <span class="stat-value" id="stat-count">-</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Active Now</span>
-                    <span class="stat-value" id="stat-active">-</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Clusters</span>
-                    <span class="stat-value" id="stat-clusters">-</span>
-                </div>
-            </div>
-
-            <div class="panel">
-                <h3>Ontology</h3>
-                <div id="ontology-list"></div>
-            </div>
-
-            <div class="panel">
-                <h3>Dynamics</h3>
-                <div id="dynamics-legend"></div>
-            </div>
-        </div>
-
-        <div id="canvas-container">
-            <div id="loading">
-                <div class="spinner"></div>
-                <div>Initializing swarm...</div>
-            </div>
-            <svg id="swarm-canvas"></svg>
-            <div id="tooltip"></div>
-
-            <div id="controls">
-                <button class="ctrl-btn" onclick="resetZoom()">Reset View</button>
-                <button class="ctrl-btn" onclick="toggleLabels()">Labels</button>
-                <button class="ctrl-btn" onclick="refreshData()">Refresh</button>
-            </div>
-
-            <div id="legend">
-                <div style="font-weight: 600; margin-bottom: 8px; color: #94a3b8;">Expertise</div>
-                <div id="legend-content"></div>
-            </div>
-        </div>
+  <header>
+    <div class="brand">
+      <div class="brand-dot"></div>
+      <span>Liquid Avatar</span>
     </div>
+    <div style="font-family: var(--font-mono); font-size: 10px;">
+      SWARM VISUALIZATION v1.1
+    </div>
+    <div class="header-actions">
+      <button class="btn" onclick="toggleLabels()">Labels</button>
+      <button class="btn" onclick="resetZoom()">Reset</button>
+      <button class="btn btn-primary" onclick="refreshData()">Refresh</button>
+    </div>
+  </header>
 
-    <script src="app.js"></script>
+  <main>
+    <!-- Left Sidebar: Stats + Ontology -->
+    <aside class="sidebar">
+      <div>
+        <div class="sidebar-title">Swarm Stats</div>
+        <div class="stat-grid">
+          <div class="stat-item">
+            <span class="stat-label">Total Agents</span>
+            <span class="stat-value" id="stat-count">–</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Active Now</span>
+            <span class="stat-value" id="stat-active">–</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Clusters</span>
+            <span class="stat-value" id="stat-clusters">–</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Schema</span>
+            <span class="stat-value">v1.1</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="sidebar-title">Ontology</div>
+        <div id="ontology-list"></div>
+      </div>
+
+      <div>
+        <div class="sidebar-title">Dynamics</div>
+        <div id="dynamics-legend"></div>
+      </div>
+    </aside>
+
+    <!-- Center: Canvas -->
+    <section id="canvas-container">
+      <svg id="swarm-canvas"></svg>
+      <div id="loading">Initializing swarm...</div>
+    </section>
+
+    <!-- Right Sidebar: Selected Agent -->
+    <aside class="sidebar">
+      <div class="sidebar-title">Selected Agent</div>
+      <div id="agent-details" class="agent-details">
+        <div style="color: var(--text-muted); font-style: italic;">
+          Click an avatar to inspect
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <footer>
+    <div>
+      <a href="/avatar/schema" class="footer-link" target="_blank">Avatar Schema</a>
+      ·
+      <a href="/ontology" class="footer-link" target="_blank">Ontology</a>
+    </div>
+    <div>
+      Aura Quorum / Small Council · 
+      <a href="https://github.com/Zero-nium/liquid-avatar-poc" class="footer-link" target="_blank">GitHub</a>
+    </div>
+  </footer>
+
+  <div id="tooltip"></div>
+  <script src="app.js"></script>
 </body>
 </html>
