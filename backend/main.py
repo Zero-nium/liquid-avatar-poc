@@ -21,6 +21,13 @@ import asyncio
 import random
 import re
 
+# Turso/libSQL support (optional, falls back to SQLite if not configured)
+try:
+    from libsql.client import create_client
+    LIBSQL_AVAILABLE = True
+except ImportError:
+    LIBSQL_AVAILABLE = False
+
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 DB_PATH = os.getenv("DB_PATH", "./liquid_avatar.db")
 SCHEMA_VERSION = "1.1"
@@ -29,6 +36,11 @@ API_KEY = os.getenv("LIQUID_AVATAR_API_KEY", "dev-key-change-me-for-prod")
 # Resolve frontend path relative to this file
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(os.path.dirname(BASE_DIR), "frontend")
+
+# Turso/libSQL configuration (optional)
+TURSO_URL = os.getenv("TURSO_URL")
+TURSO_TOKEN = os.getenv("TURSO_TOKEN")
+USE_TURSO = LIBSQL_AVAILABLE and TURSO_URL and TURSO_TOKEN
 
 # API Key header for auth
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -87,16 +99,59 @@ class HeartbeatRequest(BaseModel):
 # ─── DATABASE ─────────────────────────────────────────────────────────────────
 
 def get_db():
+    def execute_query(db, query: str, params: tuple = None, fetch: str = "all"):
+    """
+    Unified query executor that works with both SQLite and Turso.
+    fetch: "all", "one", or "none"
+    """
+    params = params or ()
+    
+    if hasattr(db, 'execute'):  # SQLite connection
+        cursor = db.cursor()
+        cursor.execute(query, params)
+        if fetch == "all":
+            return cursor.fetchall()
+        elif fetch == "one":
+            return cursor.fetchone()
+        elif fetch == "value":
+            row = cursor.fetchone()
+            return row[0] if row else None
+        db.commit()
+        return cursor
+    else:  # Turso libSQL client
+        result = db.execute(query, params)
+        if fetch == "all":
+            return result.rows
+        elif fetch == "one":
+            return result.rows[0] if result.rows else None
+        elif fetch == "value":
+            row = result.rows[0] if result.rows else None
+            return row[0] if row else None
+        return result
+
+    """Get database connection — supports both SQLite and Turso/libSQL."""
+    if USE_TURSO:
+        # Turso/libSQL client (async)
+        return create_client(url=TURSO_URL, auth_token=TURSO_TOKEN)
+    else:
+        # Local SQLite (sync)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
     conn = get_db()
+    def execute_sql(db, sql: str):
+    """Execute a SQL statement, handling both SQLite and Turso/libSQL."""
+    if hasattr(db, 'cursor'):  # Standard SQLite connection
+        db.cursor().execute(sql)
+    else:  # Turso libsql client
+        db.execute(sql)
     cursor = conn.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS agents (
+    
+    # Your exact CREATE TABLE statements, untouched
+    table_statements = [
+        """CREATE TABLE IF NOT EXISTS agents (
             agent_id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             initialized_by TEXT,
@@ -104,11 +159,8 @@ def init_db():
             role TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             last_reported TEXT
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS proficiencies (
+        )""",
+        """CREATE TABLE IF NOT EXISTS proficiencies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             agent_id TEXT,
             skill TEXT,
@@ -116,11 +168,8 @@ def init_db():
             category TEXT,
             timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS avatar_states (
+        )""",
+        """CREATE TABLE IF NOT EXISTS avatar_states (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             agent_id TEXT,
             base_hue REAL,
@@ -131,30 +180,45 @@ def init_db():
             dynamics_state TEXT,
             computed_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS activity_log (
+        )""",
+        """CREATE TABLE IF NOT EXISTS activity_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             agent_id TEXT,
             status TEXT,
             task TEXT,
             timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS ontology (
+        )""",
+        """CREATE TABLE IF NOT EXISTS ontology (
             domain TEXT PRIMARY KEY,
             base_hue REAL,
             spectrum TEXT,
             geometry_hint TEXT
-        )
-    """)
+        )"""
+    ]
+    
+    # Execute each statement using the unified helper
+    for stmt in table_statements:
+        execute_sql(conn, stmt)
 
-    conn.commit()
+    def run_query(db, sql: str, params: tuple = None, fetch: str = None):
+    """Unified query runner for SQLite & Turso with parameter binding."""
+    params = params or ()
+    if hasattr(db, 'cursor'):  # SQLite
+        cur = db.cursor()
+        cur.execute(sql, params)
+        if fetch == 'all': return cur.fetchall()
+        if fetch == 'one': return cur.fetchone()
+        return cur
+    else:  # Turso libsql client
+        result = db.execute(sql, params)
+        if fetch == 'all': return result.rows
+        if fetch == 'one': return result.rows[0] if result.rows else None
+        return result
+    
+    # SQLite requires explicit commit; Turso auto-commits DDL
+    if hasattr(conn, 'commit'):
+        conn.commit()
     conn.close()
 
 def seed_ontology():
@@ -261,6 +325,25 @@ async def verify_write_key(key: str = Security(api_key_header)):
 async def lifespan(app: FastAPI):
     init_db()
     seed_ontology()
+        # Auto-seed mock swarm if no agents exist (for fresh deploys)
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM agents")
+    if cursor.fetchone()[0] == 0:
+        # Seed mock agents silently
+        mock_agents = [
+            ("aura_quorum", "Aura Quorum", None, "conductor", "council"),
+            ("astra", "Astra", "aura_quorum", "architect", "council"),
+            # ... add your key mock agents here
+        ]
+        for agent_id, name, init_by, role, cluster in mock_agents:
+            cursor.execute("""
+                INSERT OR IGNORE INTO agents (agent_id, name, initialized_by, swarm_cluster, role)
+                VALUES (?, ?, ?, ?, ?)
+            """, (agent_id, name, init_by, cluster, role))
+        conn.commit()
+    conn.close()
+    
     yield
 
 app = FastAPI(
