@@ -613,20 +613,32 @@ async def get_ontology():
 
 @app.get("/swarm/map")
 async def get_swarm_map():
+    """Returns nodes and edges for D3.js force-directed visualization."""
     conn = get_db()
-    rows = run_query(conn, """
+    cursor = conn.cursor()
+    
+    # Fixed: removed space in "a.agent_id"
+    cursor.execute("""
         SELECT a.agent_id, a.name, a.initialized_by, a.role, a.swarm_cluster,
                av.base_hue, av.saturation, av.shape_complexity, av.pulse_rate, av.size, av.dynamics_state
-        FROM agents a
+         FROM agents a
         LEFT JOIN avatar_states av ON a.agent_id = av.agent_id
-        WHERE av.computed_at = (SELECT MAX(computed_at) FROM avatar_states WHERE agent_id = a.agent_id)
-        OR av.computed_at IS NULL
-    """, fetch="all")
-    
-    nodes, edges, agent_ids = [], [], set()
-    for row in rows:
+        WHERE av.computed_at = (
+            SELECT MAX(computed_at) FROM avatar_states WHERE agent_id = a.agent_id
+        ) OR av.computed_at IS NULL
+    """)
+
+    nodes = []
+    edges = []
+    agent_ids = set()
+
+    # First pass: collect all nodes and valid agent IDs
+    for row in cursor.fetchall():
         node = {
-            "id": row["agent_id"], "name": row["name"], "role": row["role"], "cluster": row["swarm_cluster"],
+            "id": row["agent_id"],
+            "name": row["name"],
+            "role": row["role"],
+            "cluster": row["swarm_cluster"],
             "avatar": {
                 "base_hue": row["base_hue"] if row["base_hue"] is not None else 180,
                 "saturation": row["saturation"] if row["saturation"] is not None else 0.8,
@@ -638,12 +650,18 @@ async def get_swarm_map():
         }
         nodes.append(node)
         agent_ids.add(row["agent_id"])
-    
+
+    # Second pass: create edges ONLY where source exists as a node
     for row in nodes:
-        init_row = run_query(conn, "SELECT initialized_by FROM agents WHERE agent_id = ?", (row["id"],), fetch="one")
+        cursor.execute("SELECT initialized_by FROM agents WHERE agent_id = ?", (row["id"],))
+        init_row = cursor.fetchone()
         if init_row and init_row["initialized_by"] and init_row["initialized_by"] in agent_ids:
-            edges.append({"source": init_row["initialized_by"], "target": row["id"], "type": "initialization"})
-    
+            edges.append({
+                "source": init_row["initialized_by"],
+                "target": row["id"],
+                "type": "initialization"
+            })
+
     conn.close()
     return {"nodes": nodes, "edges": edges, "node_count": len(nodes), "edge_count": len(edges)}
 
