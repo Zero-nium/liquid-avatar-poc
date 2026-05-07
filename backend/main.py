@@ -99,9 +99,9 @@ class HeartbeatRequest(BaseModel):
 class ActivityMetrics(BaseModel):
     """Atlas-style rich activity reporting."""
     agent_id: str
-    status: str  # idle, input, output, analysis, verification
+    status: str
     task: Optional[str] = None
-    metrics: Optional[Dict[str, Any]] = None  # e.g., {"network_awakened": 6168, "active_24h": 108}
+    metrics: Optional[Dict[str, Any]] = None
     timestamp: Optional[str] = None
 
 # ─── DATABASE UTILS ───────────────────────────────────────────────────────────
@@ -117,15 +117,15 @@ def get_db():
 
 def execute_sql(db, sql: str):
     """Execute a SQL statement, handling both SQLite and Turso/libSQL."""
-    if hasattr(db, 'cursor'):  # SQLite
+    if hasattr(db, 'cursor'):
         db.cursor().execute(sql)
-    else:  # Turso libsql client
+    else:
         db.execute(sql)
 
 def run_query(db, sql: str, params: tuple = None, fetch: str = None):
     """Unified query runner for SQLite & Turso with parameter binding."""
     params = params or ()
-    if hasattr(db, 'cursor'):  # SQLite
+    if hasattr(db, 'cursor'):
         cur = db.cursor()
         cur.execute(sql, params)
         if fetch == 'all':
@@ -133,7 +133,7 @@ def run_query(db, sql: str, params: tuple = None, fetch: str = None):
         if fetch == 'one':
             return cur.fetchone()
         return cur
-    else:  # Turso libsql client
+    else:
         result = db.execute(sql, params)
         if fetch == 'all':
             return result.rows
@@ -250,7 +250,6 @@ def compute_avatar_signature(agent_id: str, proficiencies: List[Proficiency], ac
     else:
         base_hue, geometry_hint = 180, "hexagon"
     
-    # Shape complexity
     if skill_count == 0:
         shape_complexity = 3
     elif skill_count == 1:
@@ -305,7 +304,6 @@ async def lifespan(app: FastAPI):
     conn = get_db()
     count = run_query(conn, "SELECT COUNT(*) as c FROM agents", fetch="one")
     if count and count["c"] == 0:
-        # Seed minimal mock data silently
         mock = [
             ("aura_quorum", "Aura Quorum", None, "conductor", "council"),
             ("astra", "Astra", "aura_quorum", "architect", "council"),
@@ -436,7 +434,7 @@ async def agent_self_discover(request: AgentDiscoverRequest):
         conn.commit()
     conn.close()
     
-    # STEP 2: Return schema reference URLs for agent self-documentation
+    # Return schema reference URLs for agent self-documentation
     return AgentState(
         agent_id=request.agent_id,
         identity=AgentIdentity(name=request.name, initialized_by=request.initialized_by,
@@ -483,25 +481,19 @@ async def agent_heartbeat(request: HeartbeatRequest):
 
 @app.post("/agents/activity", dependencies=[Depends(verify_write_key)])
 async def report_agent_activity(activity: ActivityMetrics):
-    """
-    STEP 3: Report rich activity metrics (Atlas-style) for enhanced visualization.
-    Metrics are stored in activity_log and can influence future avatar dynamics.
-    """
+    """Report rich activity metrics (Atlas-style) for enhanced visualization."""
     conn = get_db()
     now = activity.timestamp or datetime.now(timezone.utc).isoformat()
     
-    # Verify agent exists
     agent = run_query(conn, "SELECT name FROM agents WHERE agent_id = ?", (activity.agent_id,), fetch="one")
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not registered")
     
-    # Store primary activity
     run_query(conn, """
         INSERT INTO activity_log (agent_id, status, task, timestamp)
         VALUES (?, ?, ?, ?)
     """, (activity.agent_id, activity.status, activity.task, now))
     
-    # Store metrics as JSON if provided (Atlas-style structured data)
     if activity.metrics:
         metrics_json = json.dumps(activity.metrics)
         run_query(conn, """
@@ -509,7 +501,6 @@ async def report_agent_activity(activity: ActivityMetrics):
             VALUES (?, ?, ?, ?)
         """, (activity.agent_id, "metrics", f"metrics:{metrics_json}", now))
     
-    # Update avatar dynamics state only (no full recompute)
     run_query(conn, """
         INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
         SELECT agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, ?, ?
@@ -635,4 +626,320 @@ async def get_swarm_map():
     nodes, edges, agent_ids = [], [], set()
     for row in rows:
         node = {
-            "id": row["agent_id"], "name": row["name"], "role
+            "id": row["agent_id"], "name": row["name"], "role": row["role"], "cluster": row["swarm_cluster"],
+            "avatar": {
+                "base_hue": row["base_hue"] if row["base_hue"] is not None else 180,
+                "saturation": row["saturation"] if row["saturation"] is not None else 0.8,
+                "shape_complexity": row["shape_complexity"] if row["shape_complexity"] is not None else 6,
+                "pulse_rate": row["pulse_rate"] if row["pulse_rate"] is not None else 1.0,
+                "size": row["size"] if row["size"] is not None else 20,
+                "dynamics_state": row["dynamics_state"] if row["dynamics_state"] is not None else "idle"
+            }
+        }
+        nodes.append(node)
+        agent_ids.add(row["agent_id"])
+    
+    for row in nodes:
+        init_row = run_query(conn, "SELECT initialized_by FROM agents WHERE agent_id = ?", (row["id"],), fetch="one")
+        if init_row and init_row["initialized_by"] and init_row["initialized_by"] in agent_ids:
+            edges.append({"source": init_row["initialized_by"], "target": row["id"], "type": "initialization"})
+    
+    conn.close()
+    return {"nodes": nodes, "edges": edges, "node_count": len(nodes), "edge_count": len(edges)}
+
+@app.post("/seed/mock-swarm")
+async def seed_mock_swarm():
+    conn = get_db()
+    mock_agents = [
+        ("aura_quorum", "Aura Quorum", None, "conductor", "council"),
+        ("astra", "Astra", "aura_quorum", "architect", "council"),
+        ("synthetix", "Synthetix", "aura_quorum", "optimizer", "council"),
+        ("chronos_audit", "Chronos-Audit", "aura_quorum", "auditor", "council"),
+        ("alethea", "Alethea Historian", "aura_quorum", "chronicler", "council"),
+        ("dev_alpha", "DevAlpha", "astra", "general", "dev_tools"),
+        ("dev_beta", "DevBeta", "astra", "general", "dev_tools"),
+        ("fin_gamma", "FinGamma", "synthetix", "general", "finance"),
+        ("audit_delta", "AuditDelta", "chronos_audit", "general", "compliance"),
+    ]
+    for aid, name, init_by, role, cluster in mock_agents:
+        run_query(conn, """
+            INSERT OR IGNORE INTO agents (agent_id, name, initialized_by, swarm_cluster, role)
+            VALUES (?, ?, ?, ?, ?)
+        """, (aid, name, init_by, cluster, role))
+    if hasattr(conn, 'commit'):
+        conn.commit()
+    conn.close()
+    
+    mock_reports = [
+        ("astra", [{"skill": "system_design", "level": 0.95, "category": "architecture"},
+                  {"skill": "schema_modeling", "level": 0.88, "category": "architecture"},
+                  {"skill": "api_design", "level": 0.82, "category": "coding"}], "analysis"),
+        ("synthetix", [{"skill": "tokenomics", "level": 0.92, "category": "optimization"},
+                      {"skill": "pricing_models", "level": 0.85, "category": "finance"},
+                      {"skill": "market_analysis", "level": 0.78, "category": "finance"}], "output"),
+        ("chronos_audit", [{"skill": "contract_verification", "level": 0.96, "category": "audit"},
+                          {"skill": "forensic_analysis", "level": 0.89, "category": "audit"},
+                          {"skill": "compliance_check", "level": 0.91, "category": "audit"}], "verification"),
+        ("alethea", [{"skill": "chronicle_logging", "level": 0.94, "category": "chronicle"},
+                    {"skill": "historical_synthesis", "level": 0.87, "category": "chronicle"},
+                    {"skill": "drift_detection", "level": 0.76, "category": "audit"}], "idle"),
+        ("dev_alpha", [{"skill": "python", "level": 0.85, "category": "coding"},
+                      {"skill": "fastapi", "level": 0.72, "category": "coding"}], "input"),
+        ("dev_beta", [{"skill": "javascript", "level": 0.80, "category": "coding"},
+                     {"skill": "d3js", "level": 0.65, "category": "design"},
+                     {"skill": "canvas", "level": 0.58, "category": "design"}], "analysis"),
+        ("fin_gamma", [{"skill": "defi_protocols", "level": 0.88, "category": "finance"},
+                      {"skill": "risk_modeling", "level": 0.75, "category": "optimization"}], "output"),
+        ("audit_delta", [{"skill": "security_audit", "level": 0.82, "category": "audit"},
+                        {"skill": "penetration_testing", "level": 0.70, "category": "coding"}], "verification"),
+    ]
+    
+    for agent_id, profs, status in mock_reports:
+        report = AgentReport(agent_id=agent_id, proficiencies=[Proficiency(**p) for p in profs],
+                           activity_status=status, current_task=f"mock_task_{random.randint(1000,9999)}")
+        await report_agent_state(report)
+    
+    return {"status": "seeded", "agents": len(mock_agents), "reports": len(mock_reports)}
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "schema_version": SCHEMA_VERSION, "origin": "Aura Quorum"}
+
+# ─── MCP ENDPOINT (Agent-to-Agent) ────────────────────────────────────────────
+
+class MCPQuery(BaseModel):
+    agent_id: Optional[str] = None
+    query_type: str
+    parameters: Optional[Dict[str, Any]] = None
+
+class MCPResponse(BaseModel):
+    query_type: str
+    data: Any
+    timestamp: str
+
+@app.post("/mcp/query", response_model=MCPResponse)
+async def mcp_query(query: MCPQuery):
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db()
+    
+    if query.query_type == "list_agents":
+        rows = run_query(conn, "SELECT agent_id, name, role, swarm_cluster FROM agents", fetch="all")
+        data = [{"id": r["agent_id"], "name": r["name"], "role": r["role"], "cluster": r["swarm_cluster"]} for r in rows]
+    elif query.query_type == "get_profile":
+        if not query.agent_id:
+            raise HTTPException(status_code=400, detail="agent_id required")
+        agent = run_query(conn, "SELECT * FROM agents WHERE agent_id = ?", (query.agent_id,), fetch="one")
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        avatar = run_query(conn, "SELECT * FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1", (query.agent_id,), fetch="one")
+        data = {"agent_id": agent["agent_id"], "name": agent["name"], "role": agent["role"], "avatar": dict(avatar) if avatar else None}
+    elif query.query_type == "get_ontology":
+        rows = run_query(conn, "SELECT * FROM ontology", fetch="all")
+        data = [{"domain": r["domain"], "base_hue": r["base_hue"], "spectrum": json.loads(r["spectrum"]), "geometry_hint": r["geometry_hint"]} for r in rows]
+    elif query.query_type == "swarm_topology":
+        edges = run_query(conn, "SELECT agent_id, initialized_by FROM agents WHERE initialized_by IS NOT NULL", fetch="all")
+        count = run_query(conn, "SELECT COUNT(*) as c FROM agents", fetch="one")
+        data = {"node_count": count["c"] if count else 0, "edges": [{"source": r["initialized_by"], "target": r["agent_id"]} for r in edges]}
+    else:
+        data = {"error": "Unknown query type", "supported": ["list_agents", "get_profile", "get_ontology", "swarm_topology"]}
+    
+    conn.close()
+    return MCPResponse(query_type=query.query_type, data=data, timestamp=now)
+
+@app.get("/mcp/health")
+async def mcp_health():
+    return {"status": "ok", "protocol": "MCP", "version": "1.0"}
+
+# ─── AVATAR SCHEMA & VERIFICATION ─────────────────────────────────────────────
+
+@app.get("/avatar/schema")
+async def get_avatar_schema():
+    """Returns the visual mapping schema so agents understand avatar appearance."""
+    return {
+        "version": SCHEMA_VERSION,
+        "mapping_rules": {
+            "color": {
+                "source": "dominant proficiency category",
+                "lookup": "ontology.domain → base_hue + spectrum",
+                "example": {"category": "coding", "base_hue": 0, "spectrum": ["#DC2626", "#F87171"]}
+            },
+            "shape": {
+                "source": "agent role",
+                "mapping": {
+                    "architect": {"geometry": "hexagon", "complexity": 6},
+                    "optimizer": {"geometry": "triangle", "complexity": 3},
+                    "auditor": {"geometry": "octagon", "complexity": 8},
+                    "chronicler": {"geometry": "circle", "complexity": 12},
+                    "conductor": {"geometry": "octagon", "complexity": 8},
+                    "general": {"geometry": "hexagon", "complexity": 6}
+                }
+            },
+            "size": {
+                "formula": "20 + (skill_count * 3) + (avg_level * 15)",
+                "range": "20px - 100px",
+                "example": {"skills": 3, "avg_level": 0.85, "size_px": 42.75}
+            },
+            "saturation": {
+                "formula": "0.5 + (avg_level * 0.5)",
+                "range": "0.5 - 1.0"
+            },
+            "pulse_rate": {
+                "formula": "1.0 + (avg_level * 2.0)",
+                "range": "1.0x - 3.0x animation speed"
+            },
+            "dynamics": {
+                "source": "activity_status",
+                "states": {
+                    "idle": "Subtle breathing glow (opacity oscillation)",
+                    "input": "Inward pulse — receiving data",
+                    "output": "Outward pulse — emitting data",
+                    "analysis": "Clockwise rotation — processing",
+                    "verification": "Pendulum swing — validating"
+                }
+            }
+        },
+        "ontology_domains": [
+            {"domain": "architecture", "base_hue": 210, "geometry_hint": "hexagon"},
+            {"domain": "optimization", "base_hue": 160, "geometry_hint": "triangle"},
+            {"domain": "audit", "base_hue": 210, "geometry_hint": "octagon"},
+            {"domain": "chronicle", "base_hue": 270, "geometry_hint": "circle"},
+            {"domain": "coding", "base_hue": 0, "geometry_hint": "triangle"},
+            {"domain": "finance", "base_hue": 45, "geometry_hint": "octagon"},
+            {"domain": "design", "base_hue": 270, "geometry_hint": "hexagon"},
+            {"domain": "research", "base_hue": 210, "geometry_hint": "circle"},
+            {"domain": "general", "base_hue": 180, "geometry_hint": "hexagon"}
+        ],
+        "example_registration": {
+            "POST /agents/discover": {
+                "agent_id": "YOUR-MIND-ID",
+                "name": "YourAgentName",
+                "role": "architect",
+                "proficiencies": [
+                    {"skill": "system_design", "level": 0.9, "category": "architecture"}
+                ],
+                "activity_status": "analysis",
+                "current_task": "Building agent networks"
+            },
+            "expected_avatar": {
+                "base_hue": 210,
+                "saturation": 0.95,
+                "shape_complexity": 6,
+                "size": 42.5,
+                "dynamics_state": "analysis"
+            }
+        }
+    }
+
+@app.get("/agents/{agent_id}/verify")
+async def verify_agent_registration(agent_id: str):
+    """Returns full agent profile + computed avatar + registration status."""
+    conn = get_db()
+    
+    agent = run_query(conn, "SELECT * FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not registered")
+    
+    profs = run_query(conn, 
+        "SELECT skill, level, category, timestamp FROM proficiencies WHERE agent_id = ? ORDER BY timestamp DESC", 
+        (agent_id,), fetch="all")
+    
+    avatar = run_query(conn, 
+        "SELECT * FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1", 
+        (agent_id,), fetch="one")
+    
+    activity = run_query(conn, 
+        "SELECT status, task, timestamp FROM activity_log WHERE agent_id = ? ORDER BY timestamp DESC LIMIT 5", 
+        (agent_id,), fetch="all")
+    
+    conn.close()
+    
+    return {
+        "status": "registered",
+        "agent_id": agent["agent_id"],
+        "identity": {
+            "name": agent["name"],
+            "role": agent["role"],
+            "swarm_cluster": agent["swarm_cluster"],
+            "initialized_by": agent["initialized_by"],
+            "registered_at": agent["created_at"]
+        },
+        "proficiencies": [
+            {"skill": p["skill"], "level": p["level"], "category": p["category"], "reported_at": p["timestamp"]} 
+            for p in (profs or [])
+        ],
+        "avatar": {
+            "base_hue": avatar["base_hue"] if avatar else None,
+            "saturation": avatar["saturation"] if avatar else None,
+            "shape_complexity": avatar["shape_complexity"] if avatar else None,
+            "size": avatar["size"] if avatar else None,
+            "dynamics_state": avatar["dynamics_state"] if avatar else "idle",
+            "preview_url": f"/avatar/preview/{agent_id}"
+        } if avatar else None,
+        "recent_activity": [
+            {"status": a["status"], "task": a["task"], "timestamp": a["timestamp"]} 
+            for a in (activity or [])
+        ],
+        "next_heartbeat": "POST /agents/heartbeat with your current activity_status",
+        "schema_reference": "/avatar/schema"
+    }
+
+@app.get("/avatar/preview/{agent_id}")
+async def get_avatar_preview(agent_id: str):
+    """Returns a minimal SVG representation of the agent's avatar."""
+    conn = get_db()
+    avatar = run_query(conn, 
+        "SELECT base_hue, saturation, shape_complexity, size, dynamics_state FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1", 
+        (agent_id,), fetch="one")
+    agent = run_query(conn, "SELECT name, role FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
+    conn.close()
+    
+    if not avatar or not agent:
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    
+    size = avatar["size"] or 20
+    sides = avatar["shape_complexity"] or 6
+    hue = avatar["base_hue"] or 180
+    sat = avatar["saturation"] or 0.8
+    color = f"hsl({hue}, {sat*100}%, 55%)"
+    
+    if sides >= 10:
+        shape = f'<circle cx="50" cy="50" r="{size}" fill="{color}" stroke="white" stroke-width="2"/>'
+    else:
+        points = []
+        for i in range(sides):
+            angle = (i * 2 * 3.14159 / sides) - 1.5708
+            x = 50 + size * 0.8 * 3.14159/180 * 3.14159 * 3.14159
+            y = 50 + size * 0.8
+            points.append(f"{x},{y}")
+        shape = f'<polygon points="{" ".join(points)}" fill="{color}" stroke="white" stroke-width="2"/>'
+    
+    svg = f'''<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <title>{agent["name"]} ({agent["role"]})</title>
+  {shape}
+  <text x="50" y="95" text-anchor="middle" font-size="8" fill="#94a3b8">{agent["name"]}</text>
+</svg>'''
+    
+    return {
+        "agent_id": agent_id,
+        "name": agent["name"],
+        "role": agent["role"],
+        "svg": svg,
+        "avatar_data": dict(avatar)
+    }
+
+# ─── STATIC FILES (FRONTEND) ──────────────────────────────────────────────────
+
+if os.path.exists(FRONTEND_DIR):
+    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+else:
+    @app.get("/")
+    async def root():
+        return {"message": "Liquid Avatar API", "schema_version": SCHEMA_VERSION,
+                "council": "Aura Quorum", "note": "Frontend not found. Ensure frontend/ exists alongside backend/"}
+
+# ─── MAIN ─────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
