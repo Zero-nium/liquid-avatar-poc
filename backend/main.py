@@ -6,9 +6,10 @@ Free-tier optimized: single file, minimal deps, persistent storage ready.
 Schema v1.1: Expertise→Color, Role→Geometry, Activity→Dynamics
 """
 
-from fastapi import FastAPI, HTTPException, Depends, Security, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, Security, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -20,8 +21,59 @@ import os
 import asyncio
 import random
 import re
+import logging
+import sys
 
-# Turso/libSQL support (optional, falls back to SQLite if not configured)
+# ─── LOGGING CONFIGURATION ────────────────────────────────────────────────────
+
+class JSONFormatter(logging.Formatter):
+    """Structured JSON logging for easy parsing/alerting."""
+    def format(self, record):
+        log_entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno,
+        }
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        if hasattr(record, "agent_id"):
+            log_entry["agent_id"] = record.agent_id
+        if hasattr(record, "event_type"):
+            log_entry["event_type"] = record.event_type
+        return json.dumps(log_entry)
+
+def setup_logging(log_level: str = "INFO", log_file: str = None):
+    """Configure root logger with JSON formatting."""
+    logger = logging.getLogger()
+    logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+    
+    # Console handler (JSON)
+    console = logging.StreamHandler(sys.stdout)
+    console.setFormatter(JSONFormatter())
+    logger.addHandler(console)
+    
+    # Optional file handler
+    if log_file:
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(JSONFormatter())
+        logger.addHandler(file_handler)
+    
+    return logger
+
+def log_agent_event(logger, event_type: str, agent_id: str, message: str, **extra):
+    """Log an agent-specific event with structured context."""
+    extra_log = {"event_type": event_type, "agent_id": agent_id, **extra}
+    logger.info(message, extra=extra_log)
+
+# Initialize logger
+logger = setup_logging(log_level=os.getenv("LOG_LEVEL", "INFO"))
+
+# ─── TURSO/LIBSQL SUPPORT ─────────────────────────────────────────────────────
+
 try:
     from libsql.client import create_client
     LIBSQL_AVAILABLE = True
@@ -293,6 +345,36 @@ async def verify_write_key(key: str = Security(api_key_header)):
         raise HTTPException(status_code=403, detail="Invalid API key")
     return key
 
+# ─── WEBSOCKET MANAGER (Defined before endpoints that use it) ─────────────────
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+    
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+    
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+    
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections[:]:  # Copy to avoid modification during iteration
+            try:
+                await connection.send_json(message)
+            except Exception:
+                self.disconnect(connection)
+
+manager = ConnectionManager()
+
+async def broadcast_swarm_update(update_type: str, data: dict = None):
+    """Broadcast updates to connected WebSocket clients."""
+    message = {"type": update_type, "timestamp": datetime.now(timezone.utc).isoformat()}
+    if data:
+        message["data"] = data
+    await manager.broadcast(message)
+
 # ─── FASTAPI APP ──────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -315,9 +397,12 @@ async def lifespan(app: FastAPI):
             """, (aid, name, init_by, cluster, role))
         if hasattr(conn, 'commit'):
             conn.commit()
+        log_agent_event(logger, "auto_seed", "system", "Seeded mock swarm for fresh deploy")
     conn.close()
     
+    log_agent_event(logger, "startup", "system", "Liquid Avatar API started", schema_version=SCHEMA_VERSION)
     yield
+    log_agent_event(logger, "shutdown", "system", "Liquid Avatar API shutting down")
 
 app = FastAPI(title="Liquid Avatar API", version=SCHEMA_VERSION, lifespan=lifespan)
 
@@ -336,6 +421,7 @@ async def report_agent_state(report: AgentReport):
     agent_row = run_query(conn, "SELECT * FROM agents WHERE agent_id = ?", (report.agent_id,), fetch="one")
     
     if not agent_row:
+        log_agent_event(logger, "report_error", report.agent_id, "Agent not found for report")
         raise HTTPException(status_code=404, detail=f"Agent {report.agent_id} not found")
     
     now = datetime.now(timezone.utc).isoformat()
@@ -365,6 +451,16 @@ async def report_agent_state(report: AgentReport):
         conn.commit()
     conn.close()
     
+    log_agent_event(logger, "agent_reported", report.agent_id, 
+                   f"Agent reported {len(report.proficiencies)} proficiencies",
+                   status=report.activity_status)
+    
+    # Broadcast update (non-blocking)
+    asyncio.create_task(broadcast_swarm_update("agent_updated", {
+        "agent_id": report.agent_id,
+        "status": report.activity_status
+    }))
+    
     return AgentState(
         agent_id=report.agent_id,
         identity=AgentIdentity(
@@ -390,8 +486,10 @@ async def register_agent(agent_id: str, name: str, initialized_by: Optional[str]
         """, (agent_id, name, initialized_by, swarm_cluster, role))
         if hasattr(conn, 'commit'):
             conn.commit()
+        log_agent_event(logger, "agent_registered", agent_id, f"Agent {name} registered", role=role)
         return {"status": "registered", "agent_id": agent_id}
     except sqlite3.IntegrityError:
+        log_agent_event(logger, "registration_error", agent_id, "Agent already exists")
         raise HTTPException(status_code=409, detail="Agent already exists")
     finally:
         conn.close()
@@ -434,6 +532,17 @@ async def agent_self_discover(request: AgentDiscoverRequest):
         conn.commit()
     conn.close()
     
+    log_agent_event(logger, "agent_discovered", request.agent_id,
+                   f"Agent {request.name} self-discovered with {len(request.proficiencies or [])} proficiencies",
+                   role=request.role, cluster=request.swarm_cluster)
+    
+    # Broadcast update (non-blocking)
+    asyncio.create_task(broadcast_swarm_update("agent_registered", {
+        "agent_id": request.agent_id,
+        "name": request.name,
+        "role": request.role
+    }))
+    
     # Return schema reference URLs for agent self-documentation
     return AgentState(
         agent_id=request.agent_id,
@@ -457,6 +566,7 @@ async def agent_heartbeat(request: HeartbeatRequest):
     
     agent = run_query(conn, "SELECT name FROM agents WHERE agent_id = ?", (request.agent_id,), fetch="one")
     if not agent:
+        log_agent_event(logger, "heartbeat_error", request.agent_id, "Agent not registered for heartbeat")
         raise HTTPException(status_code=404, detail="Agent not registered")
     
     run_query(conn, "UPDATE agents SET last_reported = ? WHERE agent_id = ?", (now, request.agent_id))
@@ -477,6 +587,17 @@ async def agent_heartbeat(request: HeartbeatRequest):
     if hasattr(conn, 'commit'):
         conn.commit()
     conn.close()
+    
+    log_agent_event(logger, "agent_heartbeat", request.agent_id,
+                   f"Heartbeat received: {request.activity_status or 'idle'}",
+                   task=request.current_task)
+    
+    # Broadcast update (non-blocking)
+    asyncio.create_task(broadcast_swarm_update("agent_updated", {
+        "agent_id": request.agent_id,
+        "status": request.activity_status or "idle"
+    }))
+    
     return {"status": "ok", "agent_id": request.agent_id, "timestamp": now}
 
 @app.post("/agents/activity", dependencies=[Depends(verify_write_key)])
@@ -487,6 +608,7 @@ async def report_agent_activity(activity: ActivityMetrics):
     
     agent = run_query(conn, "SELECT name FROM agents WHERE agent_id = ?", (activity.agent_id,), fetch="one")
     if not agent:
+        log_agent_event(logger, "activity_error", activity.agent_id, "Agent not registered for activity report")
         raise HTTPException(status_code=404, detail="Agent not registered")
     
     run_query(conn, """
@@ -511,6 +633,17 @@ async def report_agent_activity(activity: ActivityMetrics):
     if hasattr(conn, 'commit'):
         conn.commit()
     conn.close()
+    
+    log_agent_event(logger, "agent_activity", activity.agent_id,
+                   f"Activity reported: {activity.status}",
+                   task=activity.task, metrics=bool(activity.metrics))
+    
+    # Broadcast update (non-blocking)
+    asyncio.create_task(broadcast_swarm_update("agent_updated", {
+        "agent_id": activity.agent_id,
+        "status": activity.status,
+        "task": activity.task,
+    }))
     
     return {
         "status": "ok",
@@ -617,7 +750,6 @@ async def get_swarm_map():
     conn = get_db()
     cursor = conn.cursor()
     
-    # Fixed: removed space in "a.agent_id"
     cursor.execute("""
         SELECT a.agent_id, a.name, a.initialized_by, a.role, a.swarm_cluster,
                av.base_hue, av.saturation, av.shape_complexity, av.pulse_rate, av.size, av.dynamics_state
@@ -717,11 +849,89 @@ async def seed_mock_swarm():
                            activity_status=status, current_task=f"mock_task_{random.randint(1000,9999)}")
         await report_agent_state(report)
     
+    log_agent_event(logger, "mock_swarm_seeded", "system", f"Seeded {len(mock_agents)} mock agents")
     return {"status": "seeded", "agents": len(mock_agents), "reports": len(mock_reports)}
 
 @app.get("/health")
 async def health():
     return {"status": "ok", "schema_version": SCHEMA_VERSION, "origin": "Aura Quorum"}
+
+# ─── METHODOLOGY ENDPOINT (Human Transparency) ────────────────────────────────
+
+@app.get("/methodology")
+async def get_methodology():
+    """
+    Human-readable explanation of how Liquid Avatar verifies agents,
+    computes avatars, and tracks activity. For transparency and auditability.
+    """
+    return {
+        "version": "1.0",
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "sections": {
+            "agent_verification": {
+                "title": "How We Verify an Agent Exists",
+                "steps": [
+                    "1. Agent submits POST /agents/discover with agent_id (UUID format) and name",
+                    "2. Backend validates agent_id format via regex: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i",
+                    "3. If agent_id already exists, profile is updated; otherwise, new record created",
+                    "4. Optional: initialized_by field links to coordinating agent (for audit trail)",
+                    "5. Response includes verify_url for agent to confirm registration"
+                ],
+                "security": "All write endpoints require X-API-Key header to prevent unauthorized registration"
+            },
+            "nature_verification": {
+                "title": "How We Determine an Agent's Role & Capabilities",
+                "steps": [
+                    "1. Agent submits proficiencies: [{skill, level (0.0-1.0), category}]",
+                    "2. Backend maps category → ontology domain (e.g., 'Mind Engineering' → 'architecture')",
+                    "3. Dominant domain (by weighted level) determines avatar color via base_hue lookup",
+                    "4. Agent role (architect/optimizer/auditor/etc.) determines shape geometry",
+                    "5. Skill count + average level determine avatar size and saturation",
+                    "6. Full mapping rules available at GET /avatar/schema"
+                ],
+                "transparency": "Agents can preview their computed avatar at GET /agents/{id}/verify before finalizing"
+            },
+            "activity_verification": {
+                "title": "How We Track and Visualize Agent Activity",
+                "steps": [
+                    "1. Agent reports status via POST /agents/activity or POST /agents/heartbeat",
+                    "2. Valid statuses: idle, input, output, analysis, verification",
+                    "3. Each status maps to a distinct animation: breathing, pulse-in, pulse-out, rotation, pendulum",
+                    "4. Activity logs are stored with timestamp for historical audit",
+                    "5. Avatar dynamics update in real-time via WebSocket (when enabled)"
+                ],
+                "privacy": "Only activity status and task description are stored; no content of agent work is retained"
+            },
+            "data_integrity": {
+                "title": "How We Ensure Data Accuracy",
+                "measures": [
+                    "• SQLite foreign keys enforce referential integrity between agents, proficiencies, and avatars",
+                    "• Avatar computation is deterministic: same inputs → same output (verifiable by agents)",
+                    "• Database health checks run periodically to detect orphaned records or null states",
+                    "• All mutations are logged with timestamp and source API key for auditability",
+                    "• Agents can delete their profile via DELETE /agents/{id} with valid API key"
+                ]
+            },
+            "human_verification": {
+                "title": "How Humans Can Verify What They See",
+                "tools": [
+                    "• View raw agent data: GET /agents/{id} returns full profile + history",
+                    "• Inspect avatar computation: GET /avatar/schema documents all mapping rules",
+                    "• Audit activity logs: GET /agents/{id} includes recent activity_history",
+                    "• Export swarm data: GET /swarm/map returns D3-compatible JSON for independent visualization",
+                    "• Run integrity checks: python scripts/db_health.py validates database consistency"
+                ]
+            }
+        },
+        "glossary": {
+            "agent_id": "Unique UUID identifying an agent in the swarm",
+            "proficiency": "A skill with confidence level (0.0-1.0) in a category",
+            "ontology domain": "Canonical category mapping proficiencies to visual attributes",
+            "dynamics_state": "Current activity mode driving avatar animation",
+            "swarm_cluster": "Logical grouping of agents (e.g., 'council', 'ethoswarm_network')"
+        },
+        "contact": "For questions about methodology: https://github.com/Zero-nium/liquid-avatar-poc/issues"
+    }
 
 # ─── MCP ENDPOINT (Agent-to-Agent) ────────────────────────────────────────────
 
@@ -767,6 +977,23 @@ async def mcp_query(query: MCPQuery):
 @app.get("/mcp/health")
 async def mcp_health():
     return {"status": "ok", "protocol": "MCP", "version": "1.0"}
+
+# ─── WEBSOCKET ENDPOINT ───────────────────────────────────────────────────────
+
+@app.websocket("/ws/swarm")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    log_agent_event(logger, "websocket_connected", "system", "Client connected to WebSocket")
+    try:
+        while True:
+            # Keep connection alive; clients listen for broadcasts
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        log_agent_event(logger, "websocket_disconnected", "system", "Client disconnected from WebSocket")
+    except Exception as e:
+        manager.disconnect(websocket)
+        log_agent_event(logger, "websocket_error", "system", f"WebSocket error: {str(e)}")
 
 # ─── AVATAR SCHEMA & VERIFICATION ─────────────────────────────────────────────
 
@@ -949,6 +1176,10 @@ async def get_avatar_preview(agent_id: str):
 
 if os.path.exists(FRONTEND_DIR):
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+    # Serve methodology.html if requested
+    @app.get("/methodology")
+    async def serve_methodology():
+        return FileResponse(os.path.join(FRONTEND_DIR, "methodology.html"))
 else:
     @app.get("/")
     async def root():
