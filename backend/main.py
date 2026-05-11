@@ -169,11 +169,11 @@ def get_db():
         except Exception as e:
             print(f"❌ Turso connection failed: {e}", file=sys.stderr)
             print(f"🔄 Falling back to SQLite: {DB_PATH}", file=sys.stderr)
-            USE_TURSO = False  # Force fallback for this request
+            # Removed: USE_TURSO = False  ← This caused UnboundLocalError
     else:
         print(f"🗄️  USING SQLITE: {DB_PATH}", file=sys.stderr)
-
-    # SQLite fallback   
+    
+    # SQLite fallback
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
