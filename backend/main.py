@@ -326,6 +326,22 @@ def compute_avatar_signature(agent_id: str, proficiencies: List[Proficiency], ac
     saturation = 0.5 + (avg_level * 0.5)
     pulse_rate = 1.0 + (avg_level * 2.0)
     
+        # ─── ROLE HIERARCHY OVERRIDE (Fixes Conductor Geometry) ───────────────────
+    role_row = run_query(conn, "SELECT role FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
+    if role_row:
+        agent_role = role_row["role"].lower() if role_row["role"] else ""
+        council_shapes = {
+            "conductor": 8,   # Octagon
+            "auditor": 8,     # Octagon
+            "architect": 6,   # Hexagon
+            "optimizer": 3,   # Triangle
+            "chronicler": 12, # Circle
+            "chronicle": 12
+        }
+        if agent_role in council_shapes:
+            shape_complexity = council_shapes[agent_role]
+    # ──────────────────────────────────────────────────────────────────────────
+
     conn.close()
     
     return AvatarSignature(
