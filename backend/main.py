@@ -160,12 +160,23 @@ class ActivityMetrics(BaseModel):
 
 def get_db():
     """Get database connection — supports both SQLite and Turso/libSQL."""
+    # ─── DEBUG: Log which backend is being used ──────────────────────────────
+    import sys
     if USE_TURSO:
-        return create_client(url=TURSO_URL, auth_token=TURSO_TOKEN)
+        print(f"🔗 USING TURSO: {TURSO_URL[:50]}...", file=sys.stderr)
+        try:
+            return create_client(url=TURSO_URL, auth_token=TURSO_TOKEN)
+        except Exception as e:
+            print(f"❌ Turso connection failed: {e}", file=sys.stderr)
+            print(f"🔄 Falling back to SQLite: {DB_PATH}", file=sys.stderr)
+            USE_TURSO = False  # Force fallback for this request
     else:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        return conn
+        print(f"🗄️  USING SQLITE: {DB_PATH}", file=sys.stderr)
+
+    # SQLite fallback   
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def execute_sql(db, sql: str):
     """Execute a SQL statement, handling both SQLite and Turso/libSQL."""
