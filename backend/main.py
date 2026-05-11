@@ -276,8 +276,25 @@ def seed_ontology():
         conn.commit()
     conn.close()
 
-def compute_avatar_signature(agent_id: str, proficiencies: List[Proficiency], activity_status: str) -> AvatarSignature:
+def compute_avatar_signature(agent_id: str, proficiencies: List[Proficiency], activity_status: str, agent_role: Optional[str] = None) -> AvatarSignature:
     """Compute avatar visual signature from agent proficiencies."""
+
+    # ─── ROLE HIERARCHY OVERRIDE (Explicit parameter) ────────────────────────
+    forced_shape = None
+    if agent_role:
+        role_lower = agent_role.lower()
+        council_shapes = {
+            "conductor": 8,   # Octagon
+            "auditor": 8,     # Octagon
+            "architect": 6,   # Hexagon
+            "optimizer": 3,   # Triangle
+            "chronicler": 12, # Circle
+            "chronicle": 12   # Circle alias
+        }
+        if role_lower in council_shapes:
+            forced_shape = council_shapes[role_lower]
+    # ────────────────────────────────────────────────────────────────────────
+
     conn = get_db()
     
     if not proficiencies:
@@ -342,6 +359,10 @@ def compute_avatar_signature(agent_id: str, proficiencies: List[Proficiency], ac
         if agent_role in council_shapes:
             shape_complexity = council_shapes[agent_role]
     # ──────────────────────────────────────────────────────────────────────────
+
+    # Apply role override if set
+    if forced_shape is not None:
+        shape_complexity = forced_shape
 
     conn.close()
     
@@ -456,7 +477,7 @@ async def report_agent_state(report: AgentReport):
     
     run_query(conn, "UPDATE agents SET last_reported = ? WHERE agent_id = ?", (now, report.agent_id))
     
-    avatar = compute_avatar_signature(report.agent_id, report.proficiencies, report.activity_status)
+    avatar = compute_avatar_signature(report.agent_id, report.proficiencies, report.activity_status, agent_row["role"])
     
     run_query(conn, """
         INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
@@ -537,7 +558,7 @@ async def agent_self_discover(request: AgentDiscoverRequest):
         VALUES (?, ?, ?, ?)
     """, (request.agent_id, request.activity_status, request.current_task, now))
     
-    avatar = compute_avatar_signature(request.agent_id, request.proficiencies or [], request.activity_status)
+    avatar = compute_avatar_signature(request.agent_id, request.proficiencies or [], request.activity_status, request.role)
     
     run_query(conn, """
         INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
