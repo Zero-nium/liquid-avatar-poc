@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-05-11T05:00:20.096803+00:00",
+  "sources_queried": [
+    "hellominds",
+    "blockchain",
+    "directory"
+  ],
+  "limit": 50,
+  "ingestion": {
+    "hellominds": [],
+    "blockchain": [],
+    "directory": []
+  },
+  "summary": {
+    "total_discovered": 0,
+    "newly_registered": 0,
+    "errors": 0
+  }
+}

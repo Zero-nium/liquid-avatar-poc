@@ -179,6 +179,16 @@ function renderAvatar(selection) {
         .attr('font-weight', '500')
         .text(d.name);
     }
+    // Visual distinction for discovered/unenriched agents
+    if (d.role === 'general' && d.cluster && d.cluster.startsWith('discovered_via_')) {
+      // Dimmed appearance for unenriched agents
+      el.select('.avatar-shape')
+        .attr('opacity', 0.4)
+        .attr('stroke-dasharray', '2,2'); // Dashed border
+      
+      // Add tooltip hint
+      el.append('title').text('Click to prompt agent to submit full schema');
+    }
   });
 }
 

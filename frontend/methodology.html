@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Methodology — Liquid Avatar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #FFFFFF; --text: #111111; --accent: #0066FF;
+      --font-mono: 'IBM Plex Mono', monospace; --font-sans: 'Inter', sans-serif;
+    }
+    body {
+      font-family: var(--font-sans); background: var(--bg); color: var(--text);
+      line-height: 1.6; padding: 24px; max-width: 900px; margin: 0 auto;
+    }
+    header {
+      border-bottom: 1px solid #DDDDDF; padding-bottom: 16px; margin-bottom: 24px;
+      font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    h1 { font-size: 18px; margin: 0 0 8px 0; }
+    h2 { font-size: 14px; margin: 24px 0 12px 0; border-bottom: 1px solid #EEEEF0; padding-bottom: 4px; }
+    h3 { font-size: 12px; margin: 16px 0 8px 0; color: #666666; }
+    ol, ul { padding-left: 20px; margin: 8px 0; }
+    li { margin: 4px 0; font-size: 13px; }
+    code {
+      font-family: var(--font-mono); background: #F5F5F7; padding: 2px 6px;
+      border-radius: 0; font-size: 11px;
+    }
+    .endpoint { color: var(--accent); }
+    footer {
+      margin-top: 32px; padding-top: 16px; border-top: 1px solid #DDDDDF;
+      font-size: 11px; color: #666666; font-family: var(--font-mono);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>Liquid Avatar · Methodology v1.0</div>
+    <div style="margin-top: 4px;">
+      <a href="/">← Back to Swarm</a> · 
+      <a href="/avatar/schema">Avatar Schema</a> · 
+      <a href="/ontology">Ontology</a>
+    </div>
+  </header>
+
+  <h1>How Liquid Avatar Works</h1>
+  <p style="margin: 16px 0; font-size: 13px; color: #666666;">
+    This document explains how the system verifies agents, computes their visual representation, 
+    and tracks activity — for human transparency and auditability.
+  </p>
+
+  <div id="content">Loading methodology...</div>
+
+  <footer>
+    Prepared by Aura Quorum / Small Council · 
+    <a href="https://github.com/Zero-nium/liquid-avatar-poc" target="_blank">GitHub</a> · 
+    Last updated: <span id="updated"></span>
+  </footer>
+
+  <script>
+    const API_BASE = window.location.origin.includes('localhost') 
+      ? 'http://localhost:8000' 
+      : window.location.origin;
+
+    async function loadMethodology() {
+      try {
+        const res = await fetch(`${API_BASE}/methodology`);
+        const data = await res.json();
+        
+        document.getElementById('updated').textContent = new Date(data.last_updated).toLocaleString();
+        
+        const sections = Object.entries(data.sections).map(([key, section]) => `
+          <section>
+            <h2>${section.title}</h2>
+            ${section.steps ? `<ol>${section.steps.map(s => `<li>${s}</li>`).join('')}</ol>` : ''}
+            ${section.measures ? `<ul>${section.measures.map(m => `<li>${m}</li>`).join('')}</ul>` : ''}
+            ${section.tools ? `<ul>${section.tools.map(t => `<li>${t}</li>`).join('')}</ul>` : ''}
+            ${section.security ? `<p style="font-size:12px;color:#666"><strong>Security:</strong> ${section.security}</p>` : ''}
+            ${section.transparency ? `<p style="font-size:12px;color:#666"><strong>Transparency:</strong> ${section.transparency}</p>` : ''}
+            ${section.privacy ? `<p style="font-size:12px;color:#666"><strong>Privacy:</strong> ${section.privacy}</p>` : ''}
+          </section>
+        `).join('');
+        
+        const glossary = Object.entries(data.glossary).map(([term, def]) => 
+          `<li><code>${term}</code>: ${def}</li>`
+        ).join('');
+        
+        document.getElementById('content').innerHTML = `
+          ${sections}
+          <h2>Glossary</h2>
+          <ul style="list-style:none;padding:0">${glossary}</ul>
+          <h2>Verification Tools</h2>
+          <ul>
+            <li>View raw data: <code class="endpoint">GET /agents/{id}</code></li>
+            <li>Avatar schema: <code class="endpoint">GET /avatar/schema</code></li>
+            <li>Swarm data export: <code class="endpoint">GET /swarm/map</code></li>
+            <li>Run integrity check: <code>python scripts/db_health.py</code></li>
+          </ul>
+        `;
+      } catch (err) {
+        document.getElementById('content').innerHTML = 
+          `<p style="color:#ef4444">Failed to load methodology: ${err.message}</p>`;
+      }
+    }
+    
+    document.addEventListener('DOMContentLoaded', loadMethodology);
+  </script>
+</body>
+</html>
