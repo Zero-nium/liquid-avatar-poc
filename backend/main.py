@@ -768,22 +768,21 @@ async def beacon_announce(announcement: BeaconAnnouncement):
         await conn.close()
         raise HTTPException(status_code=404, detail="Agent not registered. Register via /agents/discover first.")
     
-    # 2. Verify cryptographic signature (placeholder — implement your scheme)
-    # if not verify_signature(announcement.payload, announcement.signature, agent["public_key"]):
-    #     await conn.close()
-    #     raise HTTPException(status_code=403, detail="Invalid signature")
-    
-    # 3. Update agent activity and avatar dynamics
+    # 2. Extract payload data
     payload = announcement.payload
     status = payload.get("status", "idle")
     task = payload.get("task")
     
+    # 3. Update agent activity log (Status 'beacon' for discoverability)
     await run_query(conn, """
         INSERT INTO activity_log (agent_id, status, task, timestamp)
-        VALUES (?, ?, ?, ?)
-    """, (announcement.agent_id, status, task, now))
+        VALUES (?, 'beacon', ?, ?)
+    """, (announcement.agent_id, task, now))
     
-    # Update avatar dynamics without recomputing entire signature
+    # Update agent last_reported for general discovery
+    await run_query(conn, "UPDATE agents SET last_reported = ? WHERE agent_id = ?", (now, announcement.agent_id))
+    
+    # 4. Update avatar dynamics without recomputing entire signature
     await run_query(conn, """
         INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
         SELECT agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, ?, ?
@@ -791,7 +790,7 @@ async def beacon_announce(announcement: BeaconAnnouncement):
         ORDER BY computed_at DESC LIMIT 1
     """, (status, now, announcement.agent_id))
     
-    # 4. Propagate to connected WebSocket clients (real-time swarm update)
+    # 5. Propagate to connected WebSocket clients (real-time swarm update)
     await broadcast_swarm_update("beacon_update", {
         "agent_id": announcement.agent_id,
         "status": status,
