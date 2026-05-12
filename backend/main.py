@@ -827,7 +827,7 @@ async def get_beacon_discoverable(limit: int = 50, cluster: Optional[str] = None
         JOIN avatar_states av ON a.agent_id = av.agent_id
         JOIN activity_log al ON a.agent_id = al.agent_id
         WHERE al.status = 'beacon' 
-          AND julianday(al.timestamp) >= julianday('now') - (5.0 / 1440.0)
+          AND datetime(replace(replace(al.timestamp, 'T', ' '), '+00:00', '')) >= datetime('now', '-5 minutes')
           AND av.computed_at = (SELECT MAX(computed_at) FROM avatar_states WHERE agent_id = a.agent_id)
     """
     params = []
