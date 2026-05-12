@@ -74,11 +74,31 @@ logger = setup_logging(log_level=os.getenv("LOG_LEVEL", "INFO"))
 
 # ─── TURSO/LIBSQL SUPPORT ─────────────────────────────────────────────────────
 
+LIBSQL_AVAILABLE = False
+LIBSQL_ERROR = None
+
 try:
     from libsql.client import create_client
     LIBSQL_AVAILABLE = True
-except ImportError:
+    print(f"✅ libsql.client imported successfully", file=sys.stderr)
+except ImportError as e:
     LIBSQL_AVAILABLE = False
+    LIBSQL_ERROR = str(e)
+    print(f"❌ Failed to import libsql.client: {LIBSQL_ERROR}", file=sys.stderr)
+    # Try to diagnose: check if package exists but import path is wrong
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("libsql")
+        if spec:
+            print(f"⚠️  'libsql' package found at: {spec.submodule_search_locations}", file=sys.stderr)
+        else:
+            print(f"⚠️  'libsql' package NOT found in Python path", file=sys.stderr)
+    except Exception as diag_e:
+        print(f"⚠️  Diagnostic check failed: {diag_e}", file=sys.stderr)
+except Exception as e:
+    LIBSQL_AVAILABLE = False
+    LIBSQL_ERROR = str(e)
+    print(f"❌ Unexpected error importing libsql.client: {LIBSQL_ERROR}", file=sys.stderr)
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 DB_PATH = os.getenv("DB_PATH", "./liquid_avatar.db")
@@ -86,9 +106,19 @@ SCHEMA_VERSION = "1.1"
 API_KEY = os.getenv("LIQUID_AVATAR_API_KEY", "dev-key-change-me-for-prod")
 
 # Turso/libSQL configuration (optional)
+# Turso/libSQL configuration (optional)
 TURSO_URL = os.getenv("TURSO_URL")
 TURSO_TOKEN = os.getenv("TURSO_TOKEN")
+
+# Log env var status for debugging
+print(f"🔍 DEBUG: TURSO_URL set: {bool(TURSO_URL)}", file=sys.stderr)
+print(f"🔍 DEBUG: TURSO_TOKEN set: {bool(TURSO_TOKEN)}", file=sys.stderr)
+print(f"🔍 DEBUG: LIBSQL_AVAILABLE: {LIBSQL_AVAILABLE}", file=sys.stderr)
+if LIBSQL_ERROR:
+    print(f"🔍 DEBUG: LIBSQL_ERROR: {LIBSQL_ERROR}", file=sys.stderr)
+
 USE_TURSO = LIBSQL_AVAILABLE and TURSO_URL and TURSO_TOKEN
+print(f"🔍 DEBUG: USE_TURSO: {USE_TURSO}", file=sys.stderr)
 
 # Resolve frontend path relative to this file
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
