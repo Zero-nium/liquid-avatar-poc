@@ -409,15 +409,14 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-async def broadcast_swarm_update(update_type: str,  dict = None):
-    """Broadcast updates to connected WebSocket clients with error handling."""
+async def broadcast_swarm_update(update_type: str, data: Optional[dict] = None):
+    """Broadcast updates to connected WebSocket clients."""
+    message = {"type": update_type, "timestamp": datetime.now(timezone.utc).isoformat()}
+    if data is not None:
+        message["data"] = data
     try:
-        message = {"type": update_type, "timestamp": datetime.now(timezone.utc).isoformat()}
-        if data:
-            message["data"] = data
         await manager.broadcast(message)
     except Exception as e:
-        # Log error but don't crash the endpoint
         import logging
         logging.error(f"Broadcast failed: {e}", exc_info=True)
 
