@@ -818,16 +818,18 @@ async def beacon_announce(announcement: BeaconAnnouncement):
 @app.get("/beacon/discoverable")
 async def get_beacon_discoverable(limit: int = 50, cluster: Optional[str] = None):
     """Return agents actively broadcasting via Beacon (last 5 minutes)."""
+    from datetime import datetime, timezone, timedelta
+    
     conn = await get_db()
     
+    # Fetch all beacon entries with latest avatar state (no time filter in SQL)
     query = """
         SELECT a.agent_id, a.name, a.role, a.swarm_cluster, av.dynamics_state,
                al.timestamp as last_beacon
         FROM agents a
         JOIN avatar_states av ON a.agent_id = av.agent_id
         JOIN activity_log al ON a.agent_id = al.agent_id
-        WHERE al.status = 'beacon' 
-          AND datetime(replace(replace(al.timestamp, 'T', ' '), '+00:00', '')) >= datetime('now', '-5 minutes')
+        WHERE al.status = 'beacon'
           AND av.computed_at = (SELECT MAX(computed_at) FROM avatar_states WHERE agent_id = a.agent_id)
     """
     params = []
@@ -835,18 +837,35 @@ async def get_beacon_discoverable(limit: int = 50, cluster: Optional[str] = None
         query += " AND a.swarm_cluster = ?"
         params.append(cluster)
     query += " ORDER BY al.timestamp DESC LIMIT ?"
-    params.append(limit)
+    params.append(limit * 2)  # Fetch extra to account for Python filtering
     
     rows = await run_query(conn, query, tuple(params), fetch="all")
     await conn.close()
+    
+    # Filter in Python using reliable ISO 8601 parsing
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+    filtered_rows = []
+    
+    for row in rows:
+        try:
+            # Parse ISO timestamp (handle 'Z' and '+00:00' formats)
+            ts_str = row["last_beacon"]
+            if ts_str.endswith('Z'):
+                ts_str = ts_str[:-1] + '+00:00'
+            ts = datetime.fromisoformat(ts_str)
+            if ts >= cutoff:
+                filtered_rows.append(row)
+        except (ValueError, TypeError):
+            # Skip unparseable timestamps
+            continue
     
     return {
         "active_beacons": [
             {"id": r["agent_id"], "name": r["name"], "role": r["role"], 
              "cluster": r["swarm_cluster"], "status": r["dynamics_state"],
-             "last_seen": r["last_beacon"]} for r in rows
+             "last_seen": r["last_beacon"]} for r in filtered_rows[:limit]
         ],
-        "count": len(rows),
+        "count": len(filtered_rows[:limit]),
         "window_minutes": 5
     }
 
