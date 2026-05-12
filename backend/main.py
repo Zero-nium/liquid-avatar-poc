@@ -410,6 +410,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 async def broadcast_swarm_update(update_type: str,  dict = None):
+    """Broadcast updates to connected WebSocket clients."""
     message = {"type": update_type, "timestamp": datetime.now(timezone.utc).isoformat()}
     if 
         message["data"] = data
