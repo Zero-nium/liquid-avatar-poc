@@ -409,10 +409,10 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-async def broadcast_swarm_update(update_type: str, dict = None):
+async def broadcast_swarm_update(update_type: str,  dict = None):
     """Broadcast updates to connected WebSocket clients."""
     message = {"type": update_type, "timestamp": datetime.now(timezone.utc).isoformat()}
-    if 
+    if data:
         message["data"] = data
     await manager.broadcast(message)
 
@@ -1134,7 +1134,7 @@ class MCPQuery(BaseModel):
 
 class MCPResponse(BaseModel):
     query_type: str
-     Any
+    Any
     timestamp: str
 
 @app.post("/mcp/query", response_model=MCPResponse)
