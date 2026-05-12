@@ -75,6 +75,7 @@ logger = setup_logging(log_level=os.getenv("LOG_LEVEL", "INFO"))
 # ─── TURSO/LIBSQL SUPPORT ─────────────────────────────────────────────────────
 
 LIBSQL_AVAILABLE = False
+LIBSQL_ERROR = None  # ← Define at module level so it's always accessible
 create_client = None  # Will be set if import succeeds
 
 try:
@@ -84,14 +85,14 @@ try:
     print(f"✅ Turso client imported: libsql_client.create_client", file=sys.stderr)
 except ImportError as e:
     LIBSQL_AVAILABLE = False
-    print(f"❌ Failed to import Turso client: {e}", file=sys.stderr)
+    LIBSQL_ERROR = str(e)  # ← Set error message if import fails
+    print(f"❌ Failed to import Turso client: {LIBSQL_ERROR}", file=sys.stderr)
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 DB_PATH = os.getenv("DB_PATH", "./liquid_avatar.db")
 SCHEMA_VERSION = "1.1"
 API_KEY = os.getenv("LIQUID_AVATAR_API_KEY", "dev-key-change-me-for-prod")
 
-# Turso/libSQL configuration (optional)
 # Turso/libSQL configuration (optional)
 TURSO_URL = os.getenv("TURSO_URL")
 TURSO_TOKEN = os.getenv("TURSO_TOKEN")
