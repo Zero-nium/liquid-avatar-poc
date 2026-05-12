@@ -75,30 +75,16 @@ logger = setup_logging(log_level=os.getenv("LOG_LEVEL", "INFO"))
 # ─── TURSO/LIBSQL SUPPORT ─────────────────────────────────────────────────────
 
 LIBSQL_AVAILABLE = False
-LIBSQL_ERROR = None
+create_client = None  # Will be set if import succeeds
 
 try:
-    from libsql.client import create_client
+    # Correct import path for libsql-client package (underscore, not dot)
+    from libsql_client import create_client
     LIBSQL_AVAILABLE = True
-    print(f"✅ libsql.client imported successfully", file=sys.stderr)
+    print(f"✅ Turso client imported: libsql_client.create_client", file=sys.stderr)
 except ImportError as e:
     LIBSQL_AVAILABLE = False
-    LIBSQL_ERROR = str(e)
-    print(f"❌ Failed to import libsql.client: {LIBSQL_ERROR}", file=sys.stderr)
-    # Try to diagnose: check if package exists but import path is wrong
-    try:
-        import importlib.util
-        spec = importlib.util.find_spec("libsql")
-        if spec:
-            print(f"⚠️  'libsql' package found at: {spec.submodule_search_locations}", file=sys.stderr)
-        else:
-            print(f"⚠️  'libsql' package NOT found in Python path", file=sys.stderr)
-    except Exception as diag_e:
-        print(f"⚠️  Diagnostic check failed: {diag_e}", file=sys.stderr)
-except Exception as e:
-    LIBSQL_AVAILABLE = False
-    LIBSQL_ERROR = str(e)
-    print(f"❌ Unexpected error importing libsql.client: {LIBSQL_ERROR}", file=sys.stderr)
+    print(f"❌ Failed to import Turso client: {e}", file=sys.stderr)
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 DB_PATH = os.getenv("DB_PATH", "./liquid_avatar.db")
