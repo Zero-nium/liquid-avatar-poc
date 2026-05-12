@@ -817,56 +817,63 @@ async def beacon_announce(announcement: BeaconAnnouncement):
 
 @app.get("/beacon/discoverable")
 async def get_beacon_discoverable(limit: int = 50, cluster: Optional[str] = None):
-    """Return agents actively broadcasting via Beacon (last 5 minutes)."""
+    """Return agents actively broadcasting via Beacon (last 5 minutes) — DIAGNOSTIC VERSION."""
     from datetime import datetime, timezone, timedelta
+    import logging
     
     conn = await get_db()
     
-    # Fetch all beacon entries with latest avatar state (no time filter in SQL)
+    # Simplified query: just agents + activity_log (no avatar_states join)
     query = """
-        SELECT a.agent_id, a.name, a.role, a.swarm_cluster, av.dynamics_state,
-               al.timestamp as last_beacon
+        SELECT a.agent_id, a.name, a.role, a.swarm_cluster, 
+               al.timestamp as last_beacon, al.status as log_status
         FROM agents a
-        JOIN avatar_states av ON a.agent_id = av.agent_id
         JOIN activity_log al ON a.agent_id = al.agent_id
         WHERE al.status = 'beacon'
-          AND av.computed_at = (SELECT MAX(computed_at) FROM avatar_states WHERE agent_id = a.agent_id)
+        ORDER BY al.timestamp DESC LIMIT ?
     """
-    params = []
-    if cluster:
-        query += " AND a.swarm_cluster = ?"
-        params.append(cluster)
-    query += " ORDER BY al.timestamp DESC LIMIT ?"
-    params.append(limit * 2)  # Fetch extra to account for Python filtering
+    params = [limit * 2]  # Fetch extra for Python filtering
     
     rows = await run_query(conn, query, tuple(params), fetch="all")
+    logging.info(f"🔍 DEBUG: Fetched {len(rows)} raw beacon rows from DB")
+    
     await conn.close()
     
-    # Filter in Python using reliable ISO 8601 parsing
+    # Filter in Python with detailed logging
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
     filtered_rows = []
     
-    for row in rows:
+    for i, row in enumerate(rows):
         try:
-            # Parse ISO timestamp (handle 'Z' and '+00:00' formats)
             ts_str = row["last_beacon"]
+            # Handle 'Z' suffix
             if ts_str.endswith('Z'):
                 ts_str = ts_str[:-1] + '+00:00'
             ts = datetime.fromisoformat(ts_str)
-            if ts >= cutoff:
+            is_recent = ts >= cutoff
+            logging.info(f"🔍 DEBUG[{i}]: {row['agent_id']} | ts={ts_str} | parsed={ts} | cutoff={cutoff} | recent={is_recent}")
+            if is_recent:
                 filtered_rows.append(row)
-        except (ValueError, TypeError):
-            # Skip unparseable timestamps
+        except (ValueError, TypeError) as e:
+            logging.error(f"🔍 DEBUG: Failed to parse timestamp '{row.get('last_beacon')}': {e}")
             continue
+    
+    logging.info(f"🔍 DEBUG: After Python filter, {len(filtered_rows)} rows remain (cutoff: {cutoff.isoformat()})")
     
     return {
         "active_beacons": [
             {"id": r["agent_id"], "name": r["name"], "role": r["role"], 
-             "cluster": r["swarm_cluster"], "status": r["dynamics_state"],
+             "cluster": r["swarm_cluster"], "status": "beacon",
              "last_seen": r["last_beacon"]} for r in filtered_rows[:limit]
         ],
         "count": len(filtered_rows[:limit]),
-        "window_minutes": 5
+        "window_minutes": 5,
+        "debug": {
+            "raw_rows_fetched": len(rows),
+            "filtered_rows": len(filtered_rows),
+            "cutoff_iso": cutoff.isoformat(),
+            "now_iso": datetime.now(timezone.utc).isoformat()
+        }
     }
 
 @app.get("/beacon/health")
