@@ -293,7 +293,7 @@ async def seed_ontology():
     await conn.close()
 
 async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficiency], activity_status: str, agent_role: Optional[str] = None) -> AvatarSignature:
-    """Compute avatar visual signature from agent proficiencies."""
+    """Compute avatar visual signature. Priority: Role > Skill Domain."""
 
     # ─── ROLE HIERARCHY OVERRIDE (Explicit parameter) ────────────────────────
     forced_shape = None
@@ -356,16 +356,8 @@ async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficienc
     pulse_rate = 1.0 + (avg_level * 2.0)
     
     # ─── ROLE HIERARCHY OVERRIDE (Query DB for role if not passed) ───────────
-    if forced_shape is None:
-        role_row = await run_query(conn, "SELECT role FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
-        if role_row:
-            db_role = role_row["role"].lower() if role_row["role"] else ""
-            council_shapes = {
-                "conductor": 8, "auditor": 8, "architect": 6,
-                "optimizer": 3, "chronicler": 12, "chronicle": 12
-            }
-            if db_role in council_shapes:
-                shape_complexity = council_shapes[db_role]
+    if forced_shape is not None:
+        shape_complexity = forced_shape
     # ─────────────────────────────────────────────────────────────────────────
 
     await conn.close()
@@ -484,7 +476,7 @@ async def report_agent_state(report: AgentReport):
     
     await run_query(conn, "UPDATE agents SET last_reported = ? WHERE agent_id = ?", (now, report.agent_id))
     
-    avatar = await compute_avatar_signature(report.agent_id, report.proficiencies, report.activity_status, agent_row["role"])
+    avatar = await compute_avatar_signature(report.agent_id, report.proficiencies, report.activity_status, request.role)
     
     await run_query(conn, """
         INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
