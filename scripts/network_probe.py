@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Network Probe — Discover Active Agents for Liquid Avatar
-Scrapes public endpoints for agent metadata and ingests partial profiles.
+Scrapes public endpoints for agent metadata and ingests partial profiles via live API.
 
 Usage:
     python scripts/network_probe.py --hellominds --limit 100
@@ -10,22 +10,24 @@ Usage:
 
 Run via cron (daily at 2 AM):
     0 2 * * * cd ~/liquid-avatar-poc && python scripts/network_probe.py --all --cron >> logs/probe.log 2>&1
+
+Env vars required for API mode:
+    export LIQUID_AVATAR_API_KEY="your-api-key"
+    export LIQUID_AVATAR_BASE="https://liquid-avatar-poc.onrender.com"
 """
 import argparse
 import json
 import requests
-import sqlite3
 import os
 import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
-DB_PATH = os.getenv("DB_PATH", "./backend/liquid_avatar.db")
-API_KEY = os.getenv("LIQUID_AVATAR_API_KEY", "dev-key")
-BASE_URL = os.getenv("LIQUID_AVATAR_BASE", "https://liquid-avatar-poc.onrender.com")
+DB_PATH = os.getenv("DB_PATH", "./backend/liquid_avatar.db")  # Keep for fallback
+API_KEY = os.getenv("LIQUID_AVATAR_API_KEY", "dev-key")  # ← Your API key
+BASE_URL = os.getenv("LIQUID_AVATAR_BASE", "https://liquid-avatar-poc.onrender.com")  # ← Live URL
 
 # Rate limiting
 REQUEST_DELAY = 1.0  # seconds between external API calls
@@ -185,134 +187,58 @@ def discover_public_directory(limit: int = 50) -> List[Dict[str, Any]]:
     print(f"❌ GitHub: failed after {MAX_RETRIES} attempts", file=sys.stderr)
     return []
 
-# ─── INGESTION ────────────────────────────────────────────────────────────────
+# ─── API-BASED INGESTION ──────────────────────────────────────────────────────
 
-def get_db():
-    """Get database connection (supports SQLite/Turso via env vars)."""
-    # Reuse main.py's logic for consistency
-    if os.getenv("TURSO_URL") and os.getenv("TURSO_TOKEN"):
-        try:
-            from libsql_client import create_client
-            log_debug(f"Connecting to Turso: {os.getenv('TURSO_URL')[:50]}...")
-            return create_client(url=os.getenv("TURSO_URL"), auth_token=os.getenv("TURSO_TOKEN"))
-        except ImportError:
-            log_debug("libsql_client not available, falling back to SQLite")
-        except Exception as e:
-            log_debug(f"Turso connection failed: {e}, falling back to SQLite")
-    
-    log_debug(f"Using SQLite: {DB_PATH}")
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def ingest_partial_agent(agent: Dict[str, Any], source: str) -> Dict[str, Any]:
+def ingest_partial_agent_api(agent: Dict[str, Any], source: str, api_key: str, base_url: str) -> Dict[str, Any]:
     """
-    Register a minimally-inferred agent profile.
+    Register a minimally-inferred agent profile via the LIVE API.
     Returns ingestion result for logging.
     """
-    conn = get_db()
-    
     agent_id = agent.get("id")
     name = agent.get("name") or f"Unknown-{agent_id[:8] if agent_id else '00000000'}"
     
     if not agent_id:
-        log_debug(f"Skipping agent with no ID from {source}")
         return {"status": "skipped", "reason": "no_agent_id", "source": source}
     
-    log_debug(f"Checking if {agent_id} exists...")
-    
-    # Check if already exists (handle SQLite vs Turso)
-    exists = None
     try:
-        if hasattr(conn, 'execute') and not hasattr(conn, 'row_factory'):  # Turso
-            result = conn.execute("SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,))
-            exists = result.rows[0] if result.rows else None
-        else:  # SQLite
-            cursor = conn.cursor()
-            cursor.execute("SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,))
-            exists = cursor.fetchone()
-    except Exception as e:
-        log_debug(f"Error checking existence for {agent_id}: {e}")
-        if hasattr(conn, 'close'):
-            conn.close()
-        return {"status": "error", "agent_id": agent_id, "error": str(e), "source": source}
-    
-    if exists:
-        log_debug(f"Agent {agent_id} already exists")
-        if hasattr(conn, 'close'):
-            conn.close()
-        return {"status": "exists", "agent_id": agent_id, "source": source}
-    
-    # Insert minimal profile
-    now = datetime.now(timezone.utc).isoformat()
-    last_reported = now  # Forces agent to pass the 24h filter in /swarm/map
-    
-    log_debug(f"Inserting new agent {agent_id} from {source}")
-    
-    try:
-        if hasattr(conn, 'execute') and not hasattr(conn, 'row_factory'):  # Turso
-            # Insert agent record
-            conn.execute("""
-                INSERT INTO agents (agent_id, name, initialized_by, swarm_cluster, role, last_reported)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (agent_id, name, None, f"discovered_via_{source}", "general", last_reported))
-            
-            # Insert minimal avatar state (gray/hexagon/idle for unenriched)
-            conn.execute("""
-                INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (agent_id, 180, 0.3, 6, 1.0, 20, "idle", now))
-            
-            # Log discovery source
-            metadata_json = json.dumps(agent.get("metadata", {}))
-            conn.execute("""
-                INSERT INTO activity_log (agent_id, status, task, timestamp)
-                VALUES (?, ?, ?, ?)
-            """, (agent_id, "discovered", f"source:{source}|meta:{metadata_json}", now))
-            
-        else:  # SQLite
-            cursor = conn.cursor()
-            
-            # Insert agent record
-            cursor.execute("""
-                INSERT INTO agents (agent_id, name, initialized_by, swarm_cluster, role, last_reported)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (agent_id, name, None, f"discovered_via_{source}", "general", last_reported))
-            
-            # Insert minimal avatar state
-            cursor.execute("""
-                INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (agent_id, 180, 0.3, 6, 1.0, 20, "idle", now))
-            
-            # Log discovery source
-            metadata_json = json.dumps(agent.get("metadata", {}))
-            cursor.execute("""
-                INSERT INTO activity_log (agent_id, status, task, timestamp)
-                VALUES (?, ?, ?, ?)
-            """, (agent_id, "discovered", f"source:{source}|meta:{metadata_json}", now))
+        # Call the live /agents/discover endpoint
+        res = requests.post(
+            f"{base_url}/agents/discover",
+            headers={
+                "X-API-Key": api_key,
+                "Content-Type": "application/json",
+                "User-Agent": "LiquidAvatar-Probe/1.0"
+            },
+            json={
+                "agent_id": agent_id,
+                "name": name,
+                "role": "general",  # Default role for discovered agents
+                "swarm_cluster": f"discovered_via_{source}",
+                "proficiencies": [],  # Empty until agent enriches
+                "activity_status": "idle",
+                "current_task": f"Discovered via {source}"
+            },
+            timeout=30
+        )
         
-        # Commit transaction - CRITICAL FOR TURSO
-        if hasattr(conn, 'commit'):
-            conn.commit()
-            log_debug(f"Committed transaction for {agent_id}")
-        
-        if hasattr(conn, 'close'):
-            conn.close()
-        
-        log_debug(f"✅ Successfully registered {agent_id}")
-        return {"status": "registered", "agent_id": agent_id, "name": name, "source": source}
-        
-    except Exception as e:
-        log_debug(f"❌ Error ingesting {agent_id}: {e}")
-        if hasattr(conn, 'close'):
-            conn.close()
+        if res.status_code == 200:
+            log_debug(f"✅ Registered {agent_id} via API")
+            return {"status": "registered", "agent_id": agent_id, "name": name, "source": source}
+        elif res.status_code == 409:  # Conflict = already exists
+            log_debug(f"Agent {agent_id} already exists via API")
+            return {"status": "exists", "agent_id": agent_id, "source": source}
+        else:
+            log_debug(f"❌ API error for {agent_id}: {res.status_code} - {res.text}")
+            return {"status": "error", "agent_id": agent_id, "error": res.text, "source": source}
+            
+    except requests.exceptions.RequestException as e:
+        log_debug(f"❌ Request error for {agent_id}: {e}")
         return {"status": "error", "agent_id": agent_id, "error": str(e), "source": source}
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 def run_probe(sources: List[str], limit: int, json_output: bool, cron_mode: bool) -> Dict[str, Any]:
-    """Run discovery probes and ingest results."""
+    """Run discovery probes and ingest results via live API."""
     results = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "sources_queried": sources,
@@ -322,13 +248,14 @@ def run_probe(sources: List[str], limit: int, json_output: bool, cron_mode: bool
     }
     
     log_debug(f"Starting probe with sources: {sources}, limit: {limit}")
+    log_debug(f"API base: {BASE_URL}, API key set: {bool(API_KEY)}")
     
     # HelloMinds API
     if "hellominds" in sources:
         print("🔍 Querying HelloMinds API...", file=sys.stderr)
         agents = discover_hellominds_agents(limit)
         for agent in agents:
-            result = ingest_partial_agent(agent, "hellominds_api")
+            result = ingest_partial_agent_api(agent, "hellominds_api", API_KEY, BASE_URL)
             results["ingestion"]["hellominds"].append(result)
             if result["status"] == "registered":
                 results["summary"]["newly_registered"] += 1
@@ -343,7 +270,7 @@ def run_probe(sources: List[str], limit: int, json_output: bool, cron_mode: bool
             print(f"🔍 Querying {chain} blockchain...", file=sys.stderr)
             agents = discover_blockchain_agents(chain, limit // 2)
             for agent in agents:
-                result = ingest_partial_agent(agent, f"blockchain_{chain}")
+                result = ingest_partial_agent_api(agent, f"blockchain_{chain}", API_KEY, BASE_URL)
                 results["ingestion"]["blockchain"].append(result)
                 if result["status"] == "registered":
                     results["summary"]["newly_registered"] += 1
@@ -357,7 +284,7 @@ def run_probe(sources: List[str], limit: int, json_output: bool, cron_mode: bool
         print("🔍 Querying public directories...", file=sys.stderr)
         agents = discover_public_directory(limit)
         for agent in agents:
-            result = ingest_partial_agent(agent, "public_directory")
+            result = ingest_partial_agent_api(agent, "public_directory", API_KEY, BASE_URL)
             results["ingestion"]["directory"].append(result)
             if result["status"] == "registered":
                 results["summary"]["newly_registered"] += 1
