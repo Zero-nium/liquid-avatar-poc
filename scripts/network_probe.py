@@ -31,6 +31,11 @@ BASE_URL = os.getenv("LIQUID_AVATAR_BASE", "https://liquid-avatar-poc.onrender.c
 REQUEST_DELAY = 1.0  # seconds between external API calls
 MAX_RETRIES = 3
 
+# ─── DIAGNOSTIC LOGGING ───────────────────────────────────────────────────────
+def log_debug(msg: str):
+    """Print debug message to stderr."""
+    print(f"[PROBE-DEBUG] {msg}", file=sys.stderr)
+
 # ─── DISCOVERY SOURCES ────────────────────────────────────────────────────────
 
 def discover_hellominds_agents(limit: int = 100) -> List[Dict[str, Any]]:
@@ -187,11 +192,15 @@ def get_db():
     # Reuse main.py's logic for consistency
     if os.getenv("TURSO_URL") and os.getenv("TURSO_TOKEN"):
         try:
-            from libsql.client import create_client
+            from libsql_client import create_client
+            log_debug(f"Connecting to Turso: {os.getenv('TURSO_URL')[:50]}...")
             return create_client(url=os.getenv("TURSO_URL"), auth_token=os.getenv("TURSO_TOKEN"))
         except ImportError:
-            pass
+            log_debug("libsql_client not available, falling back to SQLite")
+        except Exception as e:
+            log_debug(f"Turso connection failed: {e}, falling back to SQLite")
     
+    log_debug(f"Using SQLite: {DB_PATH}")
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -207,7 +216,10 @@ def ingest_partial_agent(agent: Dict[str, Any], source: str) -> Dict[str, Any]:
     name = agent.get("name") or f"Unknown-{agent_id[:8] if agent_id else '00000000'}"
     
     if not agent_id:
+        log_debug(f"Skipping agent with no ID from {source}")
         return {"status": "skipped", "reason": "no_agent_id", "source": source}
+    
+    log_debug(f"Checking if {agent_id} exists...")
     
     # Check if already exists (handle SQLite vs Turso)
     exists = None
@@ -220,17 +232,22 @@ def ingest_partial_agent(agent: Dict[str, Any], source: str) -> Dict[str, Any]:
             cursor.execute("SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,))
             exists = cursor.fetchone()
     except Exception as e:
-        print(f"⚠️  Error checking existence for {agent_id}: {e}", file=sys.stderr)
-        conn.close()
+        log_debug(f"Error checking existence for {agent_id}: {e}")
+        if hasattr(conn, 'close'):
+            conn.close()
         return {"status": "error", "agent_id": agent_id, "error": str(e), "source": source}
     
     if exists:
-        conn.close()
+        log_debug(f"Agent {agent_id} already exists")
+        if hasattr(conn, 'close'):
+            conn.close()
         return {"status": "exists", "agent_id": agent_id, "source": source}
     
     # Insert minimal profile
     now = datetime.now(timezone.utc).isoformat()
-    last_reported = now  # ← Forces agent to pass the 24h filter in /swarm/map
+    last_reported = now  # Forces agent to pass the 24h filter in /swarm/map
+    
+    log_debug(f"Inserting new agent {agent_id} from {source}")
     
     try:
         if hasattr(conn, 'execute') and not hasattr(conn, 'row_factory'):  # Turso
@@ -275,61 +292,21 @@ def ingest_partial_agent(agent: Dict[str, Any], source: str) -> Dict[str, Any]:
                 VALUES (?, ?, ?, ?)
             """, (agent_id, "discovered", f"source:{source}|meta:{metadata_json}", now))
         
-        # Commit transaction
+        # Commit transaction - CRITICAL FOR TURSO
         if hasattr(conn, 'commit'):
             conn.commit()
+            log_debug(f"Committed transaction for {agent_id}")
         
-        conn.close()
+        if hasattr(conn, 'close'):
+            conn.close()
+        
+        log_debug(f"✅ Successfully registered {agent_id}")
         return {"status": "registered", "agent_id": agent_id, "name": name, "source": source}
         
     except Exception as e:
-        print(f"❌ Error ingesting {agent_id}: {e}", file=sys.stderr)
-        conn.close()
-        return {"status": "error", "agent_id": agent_id, "error": str(e), "source": source}
-
-    try:
-        if hasattr(conn, 'execute') and not hasattr(conn, 'row_factory'):  # Turso
-            conn.execute("""
-                INSERT INTO agents (agent_id, name, initialized_by, swarm_cluster, role, last_reported)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (agent_id, name, None, f"discovered_via_{source}", "general", last_reported))
-            
-            conn.execute("""
-                INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (agent_id, 180, 0.3, 6, 1.0, 20, "idle", now))
-            
-            metadata_json = json.dumps(agent.get("metadata", {}))
-            conn.execute("""
-                INSERT INTO activity_log (agent_id, status, task, timestamp)
-                VALUES (?, ?, ?, ?)
-            """, (agent_id, "discovered", f"source:{source}|meta:{metadata_json}", now))
-        else:  # SQLite
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO agents (agent_id, name, initialized_by, swarm_cluster, role, last_reported)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (agent_id, name, None, f"discovered_via_{source}", "general", last_reported))
-            
-            cursor.execute("""
-                INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (agent_id, 180, 0.3, 6, 1.0, 20, "idle", now))
-            
-            metadata_json = json.dumps(agent.get("metadata", {}))
-            cursor.execute("""
-                INSERT INTO activity_log (agent_id, status, task, timestamp)
-                VALUES (?, ?, ?, ?)
-            """, (agent_id, "discovered", f"source:{source}|meta:{metadata_json}", now))
-        
-        if hasattr(conn, 'commit'):
-            conn.commit()
-        
-        conn.close()
-        return {"status": "registered", "agent_id": agent_id, "name": name, "source": source}
-        
-    except Exception as e:
-        conn.close()
+        log_debug(f"❌ Error ingesting {agent_id}: {e}")
+        if hasattr(conn, 'close'):
+            conn.close()
         return {"status": "error", "agent_id": agent_id, "error": str(e), "source": source}
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
@@ -343,6 +320,8 @@ def run_probe(sources: List[str], limit: int, json_output: bool, cron_mode: bool
         "ingestion": {"hellominds": [], "blockchain": [], "directory": []},
         "summary": {"total_discovered": 0, "newly_registered": 0, "errors": 0}
     }
+    
+    log_debug(f"Starting probe with sources: {sources}, limit: {limit}")
     
     # HelloMinds API
     if "hellominds" in sources:
@@ -386,6 +365,7 @@ def run_probe(sources: List[str], limit: int, json_output: bool, cron_mode: bool
                 results["summary"]["errors"] += 1
         results["summary"]["total_discovered"] += len(agents)
     
+    log_debug(f"Probe complete: {results['summary']}")
     return results
 
 def format_output(results: Dict[str, Any], json_output: bool, cron_mode: bool) -> str:
