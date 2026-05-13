@@ -1326,6 +1326,39 @@ async def get_avatar_preview(agent_id: str):
     
     return {"agent_id": agent_id, "name": agent["name"], "role": agent["role"], "svg": svg, "avatar_data": dict(avatar)}
 
+# --- CLEAN UP -----------------------------------------------------------------
+
+@app.delete("/agents/{agent_id}", dependencies=[Depends(verify_write_key)])
+async def delete_agent(agent_id: str):
+    """Delete an agent and all associated data (proficiencies, avatars, quotes, activity)."""
+    conn = await get_db()
+    
+    # Verify agent exists
+    agent = await run_query(conn, "SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
+    if not agent:
+        await conn.close()
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    # Delete associated data (order matters for foreign keys)
+    await run_query(conn, "DELETE FROM proficiencies WHERE agent_id = ?", (agent_id,))
+    await run_query(conn, "DELETE FROM avatar_states WHERE agent_id = ?", (agent_id,))
+    await run_query(conn, "DELETE FROM activity_log WHERE agent_id = ?", (agent_id,))
+    await run_query(conn, "DELETE FROM agent_quotes WHERE agent_id = ?", (agent_id,))
+    
+    # Delete the agent record
+    await run_query(conn, "DELETE FROM agents WHERE agent_id = ?", (agent_id,))
+    
+    if hasattr(conn, 'commit'):
+        await conn.commit()
+    await conn.close()
+    
+    log_agent_event(logger, "agent_deleted", agent_id, "Agent and all associated data deleted")
+    
+    # Broadcast update to remove from UI
+    await broadcast_swarm_update("agent_removed", {"agent_id": agent_id})
+    
+    return {"status": "deleted", "agent_id": agent_id}
+
 # ─── STATIC FILES ─────────────────────────────────────────────────────────────
 
 if os.path.exists(FRONTEND_DIR):
