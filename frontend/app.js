@@ -15,6 +15,102 @@ let selectedAgent = null;
 let showLabels = false;
 let animationFrame;
 
+// ─── WEBSOCKET CONNECTION ──────────────────────────────────────────────
+let swarmSocket = null;
+
+function connectSwarmWebSocket() {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${window.location.host}/ws/swarm`;
+  
+  swarmSocket = new WebSocket(wsUrl);
+
+  swarmSocket.onopen = () => console.log('🔌 WebSocket connected to swarm');
+  
+  swarmSocket.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      handleSwarmUpdate(msg);
+    } catch (e) {
+      console.error('WebSocket message parse error:', e);
+    }
+  };
+
+  swarmSocket.onclose = () => {
+    console.log('🔌 WebSocket disconnected. Reconnecting in 5s...');
+    setTimeout(connectSwarmWebSocket, 5000);
+  };
+
+  swarmSocket.onerror = (err) => console.error('WebSocket error:', err);
+}
+
+// ─── SWARM UPDATE HANDLER ──────────────────────────────────────────────
+function handleSwarmUpdate(msg) {
+  switch (msg.type) {
+    case 'beacon_update':
+      handleBeaconUpdate(msg.data);
+      break;
+    case 'agent_updated':
+    case 'agent_registered':
+      // Refresh swarm data from API when agents register/update
+      loadSwarmData();
+      break;
+    default:
+      break;
+  }
+}
+
+function handleBeaconUpdate(data) {
+  const agentId = data.agent_id;
+  
+  // Update the node's data with the latest beacon timestamp
+  const nodeSelection = svg.selectAll('.agent-node').filter(d => d.id === agentId);
+  
+  if (!nodeSelection.empty()) {
+    const agentData = nodeSelection.data()[0];
+    agentData.last_beacon = data.timestamp;
+    
+    // Trigger re-render for this node to show pulse
+    renderAvatar(nodeSelection);
+  }
+}
+
+// ─── DATA LOADING ────────────────────────────────────────────────────────────
+async function loadSwarmData() {
+  try {
+    const res = await fetch(`${API_BASE}/swarm/map`);
+    const newData = await res.json();
+    
+    agentsData = newData;
+    
+    if (simulation) {
+      simulation.nodes(agentsData.nodes);
+      simulation.force('link').links(agentsData.edges);
+      simulation.alpha(1).restart();
+
+      link = link.data(agentsData.edges, d => `${d.source.id}-${d.target.id}`).join('line')
+        .attr('stroke', '#334155')
+        .attr('stroke-opacity', 0.4)
+        .attr('stroke-width', 1.5);
+
+      node = node.data(agentsData.nodes, d => d.id).join('g')
+        .attr('class', 'agent-node')
+        .call(renderAvatar)
+        .call(d3.drag()
+          .on('start', dragstarted)
+          .on('drag', dragged)
+          .on('end', dragended));
+
+      node.on('click', (e, d) => selectAgent(d))
+        .on('mouseover', (e, d) => showTooltip(e, d))
+        .on('mouseout', hideTooltip);
+
+      updateStats();
+    }
+  } catch (err) {
+    console.error('Failed to load swarm data:', err);
+  }
+}
+
 // ─── COLOR UTILS ──────────────────────────────────────────────────────────────
 function hslToHex(h, s, l) {
   l /= 100;
@@ -179,6 +275,28 @@ function renderAvatar(selection) {
         .attr('font-weight', '500')
         .text(d.name);
     }
+
+    // ─── BEACON PULSE VISUALIZATION ──────────────────────────────────────
+    if (d.last_beacon) {
+      const timeSince = (Date.now() - new Date(d.last_beacon).getTime()) / 1000;
+      if (timeSince < 300) { // 5-minute window
+        el.append('circle')
+          .attr('r', d.avatar.size * 2.2)
+          .attr('fill', 'none')
+          .attr('stroke', '#00FF9D')  // Beacon green
+          .attr('stroke-width', 1.5)
+          .attr('stroke-dasharray', '4,4')
+          .attr('opacity', 0.6)
+          .attr('class', 'beacon-pulse')
+          .transition()
+          .duration(2000)
+          .attr('r', d.avatar.size * 2.8)
+          .attr('opacity', 0)
+          .repeat(Infinity)
+          .ease(d3.easeLinear);
+      }
+    }
+
     // Visual distinction for discovered/unenriched agents
     if (d.role === 'general' && d.cluster && d.cluster.startsWith('discovered_via_')) {
       // Dimmed appearance for unenriched agents
@@ -226,6 +344,9 @@ async function init() {
     updateStats();
     setupSimulation(width, height);
     startAnimationLoop();
+    
+    // Initialize WebSocket connection after successful data load
+    connectSwarmWebSocket();
 
   } catch (err) {
     console.error('Failed to load swarm data:', err);
@@ -368,6 +489,17 @@ function selectAgent(agent) {
     </div>
   `;
 
+  if (agent.quote?.text) {
+    details.innerHTML += `
+      <div style="margin-top: 12px; padding: 8px; background: var(--bg-panel); border-left: 2px solid var(--accent); font-style: italic; font-size: 12px; color: var(--text-secondary);">
+        "${agent.quote.text}"
+        <div style="margin-top: 4px; font-size: 10px; color: var(--text-muted);">
+          — Verified ${new Date(agent.quote.verified_at).toLocaleDateString()}
+        </div>
+      </div>
+    `;
+  }
+  
   node.selectAll('.avatar-shape').attr('stroke-width', 2);
   const selected = node.filter(d => d.id === agent.id);
   selected.select('.avatar-shape').attr('stroke-width', 4);
@@ -444,42 +576,6 @@ function resetZoom() {
 function toggleLabels() {
   showLabels = !showLabels;
   node.call(renderAvatar);
-}
-
-async function refreshData() {
-  document.getElementById('loading').style.display = 'block';
-  
-  try {
-    const res = await fetch(`${API_BASE}/swarm/map`);
-    const newData = await res.json();
-    
-    agentsData = newData;
-    simulation.nodes(agentsData.nodes);
-    simulation.force('link').links(agentsData.edges);
-    simulation.alpha(1).restart();
-
-    link = link.data(agentsData.edges).join('line')
-      .attr('stroke-width', 1.5);
-
-    node = node.data(agentsData.nodes).join('g')
-      .attr('class', 'agent-node')
-      .call(renderAvatar)
-      .call(d3.drag()
-        .on('start', dragstarted)
-        .on('drag', dragged)
-        .on('end', dragended));
-
-    node.on('click', (e, d) => selectAgent(d))
-      .on('mouseover', (e, d) => showTooltip(e, d))
-      .on('mouseout', hideTooltip);
-
-    updateStats();
-
-  } catch (err) {
-    console.error('Refresh failed:', err);
-  } finally {
-    document.getElementById('loading').style.display = 'none';
-  }
 }
 
 // ─── DRAG ─────────────────────────────────────────────────────────────────────
