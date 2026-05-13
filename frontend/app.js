@@ -51,7 +51,6 @@ function handleSwarmUpdate(msg) {
       break;
     case 'agent_updated':
     case 'agent_registered':
-      // Refresh swarm data from API when agents register/update
       loadSwarmData();
       break;
     default:
@@ -61,15 +60,11 @@ function handleSwarmUpdate(msg) {
 
 function handleBeaconUpdate(data) {
   const agentId = data.agent_id;
-  
-  // Update the node's data with the latest beacon timestamp
   const nodeSelection = svg.selectAll('.agent-node').filter(d => d.id === agentId);
   
   if (!nodeSelection.empty()) {
     const agentData = nodeSelection.data()[0];
     agentData.last_beacon = data.timestamp;
-    
-    // Trigger re-render for this node to show pulse
     renderAvatar(nodeSelection);
   }
 }
@@ -124,14 +119,14 @@ function hslToHex(h, s, l) {
 }
 
 function getAgentColor(agent) {
-  const hue = agent.avatar.base_hue;
-  const sat = Math.round(agent.avatar.saturation * 100);
+  const hue = agent.avatar?.base_hue ?? 180;
+  const sat = Math.round((agent.avatar?.saturation ?? 0.8) * 100);
   return hslToHex(hue, sat, 55);
 }
 
 function getAgentGlow(agent) {
-  const hue = agent.avatar.base_hue;
-  const sat = Math.round(agent.avatar.saturation * 100);
+  const hue = agent.avatar?.base_hue ?? 180;
+  const sat = Math.round((agent.avatar?.saturation ?? 0.8) * 100);
   return hslToHex(hue, sat, 70);
 }
 
@@ -162,7 +157,7 @@ function computeDynamicsTransform(agent, time) {
   const state = dynamicsState.get(agent.id);
   if (!state) return { scale: 1, rotation: 0, opacity: 1 };
   
-  const dynamics = agent.avatar.dynamics_state;
+  const dynamics = agent.avatar?.dynamics_state || 'idle';
   let scale = 1, rotation = 0, opacity = 1;
 
   switch (dynamics) {
@@ -194,8 +189,8 @@ function renderAvatar(selection) {
 
     const color = getAgentColor(d);
     const glow = getAgentGlow(d);
-    const size = d.avatar.size;
-    const sides = d.avatar.shape_complexity;
+    const size = d.avatar?.size ?? 20;
+    const sides = d.avatar?.shape_complexity ?? 6;
     const isCircle = sides >= 10;
 
     // Glow effect (outer halo)
@@ -280,31 +275,41 @@ function renderAvatar(selection) {
     if (d.last_beacon) {
       const timeSince = (Date.now() - new Date(d.last_beacon).getTime()) / 1000;
       if (timeSince < 300) { // 5-minute window
-        el.append('circle')
-          .attr('r', d.avatar.size * 2.2)
+        const pulse = el.append('circle')
+          .attr('r', size * 2.2)
           .attr('fill', 'none')
-          .attr('stroke', '#00FF9D')  // Beacon green
+          .attr('stroke', '#00FF9D')
           .attr('stroke-width', 1.5)
           .attr('stroke-dasharray', '4,4')
           .attr('opacity', 0.6)
-          .attr('class', 'beacon-pulse')
-          .transition()
-          .duration(2000)
-          .attr('r', d.avatar.size * 2.8)
-          .attr('opacity', 0)
-          .repeat(Infinity)
-          .ease(d3.easeLinear);
+          .attr('class', 'beacon-pulse');
+        
+        // Create infinite pulse animation using proper D3 chaining
+        function pulseAnimation() {
+          pulse.transition()
+            .duration(2000)
+            .attr('r', size * 2.8)
+            .attr('opacity', 0)
+            .on('end', function repeat() {
+              d3.select(this)
+                .attr('r', size * 2.2)
+                .attr('opacity', 0.6)
+                .transition()
+                .duration(2000)
+                .attr('r', size * 2.8)
+                .attr('opacity', 0)
+                .on('end', repeat);
+            });
+        }
+        pulseAnimation();
       }
     }
 
     // Visual distinction for discovered/unenriched agents
     if (d.role === 'general' && d.cluster && d.cluster.startsWith('discovered_via_')) {
-      // Dimmed appearance for unenriched agents
       el.select('.avatar-shape')
         .attr('opacity', 0.4)
-        .attr('stroke-dasharray', '2,2'); // Dashed border
-      
-      // Add tooltip hint
+        .attr('stroke-dasharray', '2,2');
       el.append('title').text('Click to prompt agent to submit full schema');
     }
   });
@@ -345,7 +350,6 @@ async function init() {
     setupSimulation(width, height);
     startAnimationLoop();
     
-    // Initialize WebSocket connection after successful data load
     connectSwarmWebSocket();
 
   } catch (err) {
@@ -358,7 +362,7 @@ async function init() {
 }
 
 function setupSimulation(width, height) {
-  agentsData.nodes.forEach(d => initDynamics(d.id, d.avatar.dynamics_state));
+  agentsData.nodes.forEach(d => initDynamics(d.id, d.avatar?.dynamics_state || 'idle'));
 
   simulation = d3.forceSimulation(agentsData.nodes)
     .force('link', d3.forceLink(agentsData.edges)
@@ -367,7 +371,7 @@ function setupSimulation(width, height) {
       .strength(0.5))
     .force('charge', d3.forceManyBody().strength(-400))
     .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collision', d3.forceCollide().radius(d => d.avatar.size * 2.5))
+    .force('collision', d3.forceCollide().radius(d => (d.avatar?.size ?? 20) * 2.5))
     .force('cluster', d3.forceY(d => {
       const roleY = {
         'conductor': height * 0.3,
@@ -431,11 +435,11 @@ function startAnimationLoop() {
 
       el.select('.glow-outer')
         .attr('opacity', 0.08 * dynamics.opacity)
-        .attr('r', d.avatar.size * 1.6 * dynamics.scale);
+        .attr('r', (d.avatar?.size ?? 20) * 1.6 * dynamics.scale);
 
       el.select('.glow-inner')
         .attr('opacity', 0.15 * dynamics.opacity)
-        .attr('r', d.avatar.size * 1.2 * dynamics.scale);
+        .attr('r', (d.avatar?.size ?? 20) * 1.2 * dynamics.scale);
     });
 
     animationFrame = requestAnimationFrame(animate);
@@ -445,64 +449,83 @@ function startAnimationLoop() {
 }
 
 // ─── UI UPDATES ───────────────────────────────────────────────────────────────
-function selectAgent(agent) {
+async function selectAgent(agent) {
   selectedAgent = agent;
   const details = document.getElementById('agent-details');
   const color = getAgentColor(agent);
   
-  details.innerHTML = `
-    <div style="margin-bottom: 12px;">
-      <div style="font-size: 16px; font-weight: 600; color: ${color}; margin-bottom: 4px;">
-        ${agent.name}
+  try {
+    const res = await fetch(`${API_BASE}/agents/${agent.id}`);
+    const fullData = await res.json();
+    
+    details.innerHTML = `
+      <div style="margin-bottom: 12px;">
+        <div style="font-size: 16px; font-weight: 600; color: ${color}; margin-bottom: 4px;">
+          ${fullData.identity?.name || agent.name}
+        </div>
+        <div style="font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px;">
+          ${fullData.identity?.role || agent.role || 'general'} · ${fullData.identity?.swarm_cluster || agent.cluster || 'no cluster'}
+        </div>
       </div>
-      <div style="font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px;">
-        ${agent.role} · ${agent.cluster || 'no cluster'}
+
+      <div style="margin-bottom: 12px;">
+        <span class="dynamics-badge dynamics-${agent.avatar?.dynamics_state || 'idle'}">
+          ${agent.avatar?.dynamics_state || 'idle'}
+        </span>
       </div>
-    </div>
 
-    <div style="margin-bottom: 12px;">
-      <span class="dynamics-badge dynamics-${agent.avatar.dynamics_state}">
-        ${agent.avatar.dynamics_state}
-      </span>
-    </div>
+      <div style="font-size: 11px; color: #94a3b8; margin-bottom: 8px;">Avatar Signature</div>
+      <div class="stat-row">
+        <span class="stat-label">Hue</span>
+        <span class="stat-value">${Math.round(agent.avatar?.base_hue ?? 180)}°</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Saturation</span>
+        <span class="stat-value">${Math.round((agent.avatar?.saturation ?? 0.8) * 100)}%</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Shape</span>
+        <span class="stat-value">${agent.avatar?.shape_complexity ?? 6}-gon</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Size</span>
+        <span class="stat-value">${Math.round(agent.avatar?.size ?? 20)}px</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Pulse</span>
+        <span class="stat-value">${(agent.avatar?.pulse_rate ?? 1.0).toFixed(2)}x</span>
+      </div>
+    `;
 
-    <div style="font-size: 11px; color: #94a3b8; margin-bottom: 8px;">Avatar Signature</div>
-    <div class="stat-row">
-      <span class="stat-label">Hue</span>
-      <span class="stat-value">${Math.round(agent.avatar.base_hue)}°</span>
-    </div>
-    <div class="stat-row">
-      <span class="stat-label">Saturation</span>
-      <span class="stat-value">${Math.round(agent.avatar.saturation * 100)}%</span>
-    </div>
-    <div class="stat-row">
-      <span class="stat-label">Shape</span>
-      <span class="stat-value">${agent.avatar.shape_complexity}-gon</span>
-    </div>
-    <div class="stat-row">
-      <span class="stat-label">Size</span>
-      <span class="stat-value">${Math.round(agent.avatar.size)}px</span>
-    </div>
-    <div class="stat-row">
-      <span class="stat-label">Pulse</span>
-      <span class="stat-value">${agent.avatar.pulse_rate.toFixed(2)}x</span>
-    </div>
-  `;
-
-  if (agent.quote?.text) {
-    details.innerHTML += `
-      <div style="margin-top: 12px; padding: 8px; background: var(--bg-panel); border-left: 2px solid var(--accent); font-style: italic; font-size: 12px; color: var(--text-secondary);">
-        "${agent.quote.text}"
-        <div style="margin-top: 4px; font-size: 10px; color: var(--text-muted);">
-          — Verified ${new Date(agent.quote.verified_at).toLocaleDateString()}
+    if (fullData.quote?.text) {
+      details.innerHTML += `
+        <div style="margin-top: 12px; padding: 8px; background: var(--bg-panel); border-left: 2px solid var(--accent); font-style: italic; font-size: 12px; color: var(--text-secondary);">
+          "${fullData.quote.text}"
+          <div style="margin-top: 4px; font-size: 10px; color: var(--text-muted);">
+            — Verified ${new Date(fullData.quote.verified_at).toLocaleDateString()}
+          </div>
+        </div>
+      `;
+    }
+    
+    node.selectAll('.avatar-shape').attr('stroke-width', 2);
+    const selected = node.filter(d => d.id === agent.id);
+    selected.select('.avatar-shape').attr('stroke-width', 4);
+  } catch (err) {
+    console.error('Failed to fetch agent details:', err);
+    
+    // Fallback to basic display if fetch fails
+    details.innerHTML = `
+      <div style="margin-bottom: 12px;">
+        <div style="font-size: 16px; font-weight: 600; color: ${color}; margin-bottom: 4px;">
+          ${agent.name}
+        </div>
+        <div style="font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px;">
+          ${agent.role} · ${agent.cluster || 'no cluster'}
         </div>
       </div>
     `;
   }
-  
-  node.selectAll('.avatar-shape').attr('stroke-width', 2);
-  const selected = node.filter(d => d.id === agent.id);
-  selected.select('.avatar-shape').attr('stroke-width', 4);
 }
 
 function showTooltip(event, agent) {
@@ -512,7 +535,7 @@ function showTooltip(event, agent) {
   tooltip.innerHTML = `
     <div class="tooltip-header" style="color: ${color}">${agent.name}</div>
     <div style="color: #94a3b8; margin-bottom: 8px; font-size: 11px;">
-      ${agent.role} · ${agent.avatar.dynamics_state}
+      ${agent.role} · ${agent.avatar?.dynamics_state || 'idle'}
     </div>
   `;
 
@@ -527,7 +550,7 @@ function hideTooltip() {
 
 function updateStats() {
   const nodes = agentsData.nodes;
-  const active = nodes.filter(n => n.avatar.dynamics_state !== 'idle').length;
+  const active = nodes.filter(n => n.avatar?.dynamics_state !== 'idle').length;
   const clusters = [...new Set(nodes.map(n => n.cluster).filter(Boolean))];
   
   document.getElementById('stat-count').textContent = nodes.length;
