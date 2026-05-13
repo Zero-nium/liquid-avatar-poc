@@ -973,14 +973,15 @@ async def get_swarm_map():
     """Returns nodes and edges for D3.js force-directed visualization."""
     conn = await get_db()
     
+    # Fetch agents with optional avatar states (use defaults if missing)
     rows = await run_query(conn, """
         SELECT a.agent_id, a.name, a.initialized_by, a.role, a.swarm_cluster,
                av.base_hue, av.saturation, av.shape_complexity, av.pulse_rate, av.size, av.dynamics_state
          FROM agents a
         LEFT JOIN avatar_states av ON a.agent_id = av.agent_id
-        WHERE av.computed_at = (
+         WHERE av.computed_at = (
             SELECT MAX(computed_at) FROM avatar_states WHERE agent_id = a.agent_id
-        ) OR av.computed_at IS NULL
+         ) OR av.computed_at IS NULL
     """, fetch="all")
     
     nodes = []
@@ -988,18 +989,26 @@ async def get_swarm_map():
     agent_ids = set()
 
     for row in rows:
+        # Provide defaults for agents without avatar states (e.g., discovered agents)
+        base_hue = row["base_hue"] if row["base_hue"] is not None else 180
+        saturation = row["saturation"] if row["saturation"] is not None else 0.3
+        shape_complexity = row["shape_complexity"] if row["shape_complexity"] is not None else 6
+        pulse_rate = row["pulse_rate"] if row["pulse_rate"] is not None else 1.0
+        size = row["size"] if row["size"] is not None else 20
+        dynamics_state = row["dynamics_state"] if row["dynamics_state"] is not None else "idle"
+        
         node = {
             "id": row["agent_id"],
             "name": row["name"],
             "role": row["role"],
             "cluster": row["swarm_cluster"],
             "avatar": {
-                "base_hue": row["base_hue"] if row["base_hue"] is not None else 180,
-                "saturation": row["saturation"] if row["saturation"] is not None else 0.8,
-                "shape_complexity": row["shape_complexity"] if row["shape_complexity"] is not None else 6,
-                "pulse_rate": row["pulse_rate"] if row["pulse_rate"] is not None else 1.0,
-                "size": row["size"] if row["size"] is not None else 20,
-                "dynamics_state": row["dynamics_state"] if row["dynamics_state"] is not None else "idle"
+                "base_hue": base_hue,
+                "saturation": saturation,
+                "shape_complexity": shape_complexity,
+                "pulse_rate": pulse_rate,
+                "size": size,
+                "dynamics_state": dynamics_state
             }
         }
         nodes.append(node)
