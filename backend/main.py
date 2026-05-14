@@ -106,7 +106,8 @@ class RateLimiter:
     def __init__(self, max_requests: int, window_seconds: int):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
-        self.requests: Dict[str, deque] = {}  # ← Fixed: colon for type annotation
+        # Use comment-style type hint to avoid runtime evaluation issues
+        self.requests = {}  # type: Dict[str, deque]
     
     def is_allowed(self, identifier: str) -> bool:
         now = time.time()
@@ -126,8 +127,8 @@ class RateLimiter:
         return True
 
 # Global rate limiters
-public_register_limit = RateLimiter(max_requests=5, window_seconds=60)  # 5/min per IP
-agent_discover_limit = RateLimiter(max_requests=10, window_seconds=60)  # 10/min per agent_id
+public_register_limit = RateLimiter(max_requests=5, window_seconds=60)
+agent_discover_limit = RateLimiter(max_requests=10, window_seconds=60)
 
 # ─── DATA MODELS ──────────────────────────────────────────────────────────────
 
