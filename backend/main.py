@@ -7,7 +7,7 @@ Schema v1.1: Expertise→Color, Role→Geometry, Activity→Dynamics
 Beacon Bridge: Dynamic agent discovery & real-time propagation
 """
 
-from fastapi import FastAPI, HTTPException, Depends, Security, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, HTTPException, status, Depends, Security, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
+from collections import defaultdict, deque
 import sqlite3
 import json
 import os
@@ -24,6 +25,7 @@ import random
 import re
 import logging
 import sys
+import time
 
 # ─── LOGGING CONFIGURATION ────────────────────────────────────────────────────
 
@@ -84,6 +86,7 @@ except ImportError as e:
     LIBSQL_ERROR = str(e)
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
+
 DB_PATH = os.getenv("DB_PATH", "./liquid_avatar.db")
 SCHEMA_VERSION = "1.1"
 API_KEY = os.getenv("LIQUID_AVATAR_API_KEY", "dev-key-change-me-for-prod")
@@ -96,6 +99,30 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(os.path.dirname(BASE_DIR), "frontend")
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+# ─── RATE LIMITING ────────────────────────────────────────────────────────────
+
+class RateLimiter:
+    def __init__(self, max_requests: int, window_seconds: int):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests = defaultdict(lambda: deque())
+    
+    def is_allowed(self, identifier: str) -> bool:
+        now = time.time()
+        # Clean old requests
+        while self.requests[identifier] and self.requests[identifier][0] < now - self.window_seconds:
+            self.requests[identifier].popleft()
+        
+        if len(self.requests[identifier]) >= self.max_requests:
+            return False
+        
+        self.requests[identifier].append(now)
+        return True
+
+# Global rate limiters
+public_register_limit = RateLimiter(max_requests=5, window_seconds=60)  # 5/min per IP
+agent_discover_limit = RateLimiter(max_requests=10, window_seconds=60)  # 10/min per agent_id#
 
 # ─── DATA MODELS ──────────────────────────────────────────────────────────────
 
@@ -688,6 +715,114 @@ async def report_agent_activity(activity: ActivityMetrics):
         "timestamp": now,
         "next_update": "Send heartbeat every 5-15min while active"
     }
+
+@app.post("/agents/register/public")
+async def public_register_agent(
+    request: Request,
+    agent_id: str,
+    name: str,
+    role: Optional[str] = None,
+    swarm_cluster: Optional[str] = None,
+    proficiencies: Optional[List[Proficiency]] = None,
+    activity_status: str = "idle",
+    current_task: Optional[str] = None,
+    initialized_by: Optional[str] = None
+):
+    """
+    Public registration endpoint - no API key required.
+    Rate limited and validated to prevent abuse.
+    """
+    # Get client IP for rate limiting
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Rate limit by IP
+    if not public_register_limit.is_allowed(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many registration attempts. Please wait before trying again."
+        )
+    
+    # Basic validation
+    if not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', agent_id, re.I):
+        raise HTTPException(status_code=400, detail="agent_id must be a valid UUID format")
+    
+    if len(name) < 2 or len(name) > 50:
+        raise HTTPException(status_code=400, detail="name must be between 2 and 50 characters")
+    
+    # Rate limit by agent_id to prevent duplicate spam
+    if not agent_discover_limit.is_allowed(agent_id):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many attempts for this agent_id. Please wait before trying again."
+        )
+    
+    # Proceed with registration (same logic as /agents/discover but without API key check)
+    conn = await get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    
+    try:
+        # Check if agent already exists
+        existing = await run_query(conn, "SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
+        if existing:
+            await conn.close()
+            raise HTTPException(status_code=409, detail="Agent already registered")
+        
+        # Insert agent record
+        await run_query(conn, """
+            INSERT INTO agents (agent_id, name, initialized_by, swarm_cluster, role, last_reported)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (agent_id, name, initialized_by, swarm_cluster, role, now))
+        
+        # Insert proficiencies if provided
+        if proficiencies:
+            for p in proficiencies:
+                await run_query(conn, """
+                    INSERT INTO proficiencies (agent_id, skill, level, category, timestamp)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (agent_id, p.skill, p.level, p.category, now))
+        
+        # Log registration
+        await run_query(conn, """
+            INSERT INTO activity_log (agent_id, status, task, timestamp)
+            VALUES (?, ?, ?, ?)
+        """, (agent_id, "registered", current_task or "Public registration", now))
+        
+        # Compute and insert avatar
+        avatar = await compute_avatar_signature(agent_id, proficiencies or [], activity_status, role)
+        await run_query(conn, """
+            INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (agent_id, avatar.base_hue, avatar.saturation, avatar.shape_complexity,
+              avatar.pulse_rate, avatar.size, avatar.dynamics_state, now))
+        
+        if hasattr(conn, 'commit'):
+            await conn.commit()
+        
+        log_agent_event(logger, "public_registration", agent_id,
+                       f"Agent {name} registered via public endpoint",
+                       role=role, cluster=swarm_cluster, ip=client_ip)
+        
+        # Broadcast update
+        await broadcast_swarm_update("agent_registered", {
+            "agent_id": agent_id,
+            "name": name,
+            "role": role
+        })
+        
+        return {
+            "status": "registered",
+            "agent_id": agent_id,
+            "verify_url": f"/agents/{agent_id}/verify",
+            "schema_url": "/avatar/schema"
+        }
+        
+    except HTTPException:
+        await conn.close()
+        raise
+    except Exception as e:
+        await conn.close()
+        log_agent_event(logger, "public_registration_error", agent_id, f"Registration failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Registration failed. Please try again later.")
 
 # ─── AGENT QUOTE ENDPOINTS ────────────────────────────────────────────────────
 
