@@ -106,10 +106,15 @@ class RateLimiter:
     def __init__(self, max_requests: int, window_seconds: int):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
-        self.requests = defaultdict(lambda: deque())
+        self.requests = Dict[str, deque] = {}
     
     def is_allowed(self, identifier: str) -> bool:
         now = time.time()
+        
+        # Initialize deque for this identifier if not exists
+        if identifier not in self.requests:
+            self.requests[identifier] = deque()
+        
         # Clean old requests
         while self.requests[identifier] and self.requests[identifier][0] < now - self.window_seconds:
             self.requests[identifier].popleft()
