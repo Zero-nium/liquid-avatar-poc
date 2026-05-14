@@ -192,6 +192,16 @@ class AgentQuote(BaseModel):
     quote: str = Field(..., min_length=1, max_length=280)
     timestamp: Optional[str] = None
 
+class PublicRegisterRequest(BaseModel):
+    agent_id: str = Field(..., min_length=36, max_length=36, pattern=r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+    name: str = Field(..., min_length=2, max_length=50)
+    role: Optional[str] = None
+    swarm_cluster: Optional[str] = None
+    proficiencies: Optional[List[Proficiency]] = None
+    activity_status: str = "idle"
+    current_task: Optional[str] = None
+    initialized_by: Optional[str] = None
+
 # ─── DATABASE UTILS (ASYNC) ───────────────────────────────────────────────────
 
 async def get_db():
@@ -719,14 +729,7 @@ async def report_agent_activity(activity: ActivityMetrics):
 @app.post("/agents/register/public")
 async def public_register_agent(
     request: Request,
-    agent_id: str,
-    name: str,
-    role: Optional[str] = None,
-    swarm_cluster: Optional[str] = None,
-    proficiencies: Optional[List[Proficiency]] = None,
-    activity_status: str = "idle",
-    current_task: Optional[str] = None,
-    initialized_by: Optional[str] = None
+    data: PublicRegisterRequest
 ):
     """
     Public registration endpoint - no API key required.
@@ -742,27 +745,20 @@ async def public_register_agent(
             detail="Too many registration attempts. Please wait before trying again."
         )
     
-    # Basic validation
-    if not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', agent_id, re.I):
-        raise HTTPException(status_code=400, detail="agent_id must be a valid UUID format")
-    
-    if len(name) < 2 or len(name) > 50:
-        raise HTTPException(status_code=400, detail="name must be between 2 and 50 characters")
-    
     # Rate limit by agent_id to prevent duplicate spam
-    if not agent_discover_limit.is_allowed(agent_id):
+    if not agent_discover_limit.is_allowed(data.agent_id):
         raise HTTPException(
             status_code=429,
             detail="Too many attempts for this agent_id. Please wait before trying again."
         )
     
-    # Proceed with registration (same logic as /agents/discover but without API key check)
+    # Proceed with registration
     conn = await get_db()
     now = datetime.now(timezone.utc).isoformat()
     
     try:
         # Check if agent already exists
-        existing = await run_query(conn, "SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
+        existing = await run_query(conn, "SELECT agent_id FROM agents WHERE agent_id = ?", (data.agent_id,), fetch="one")
         if existing:
             await conn.close()
             raise HTTPException(status_code=409, detail="Agent already registered")
@@ -771,48 +767,48 @@ async def public_register_agent(
         await run_query(conn, """
             INSERT INTO agents (agent_id, name, initialized_by, swarm_cluster, role, last_reported)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (agent_id, name, initialized_by, swarm_cluster, role, now))
+        """, (data.agent_id, data.name, data.initialized_by, data.swarm_cluster, data.role, now))
         
         # Insert proficiencies if provided
-        if proficiencies:
-            for p in proficiencies:
+        if data.proficiencies:
+            for p in data.proficiencies:
                 await run_query(conn, """
                     INSERT INTO proficiencies (agent_id, skill, level, category, timestamp)
                     VALUES (?, ?, ?, ?, ?)
-                """, (agent_id, p.skill, p.level, p.category, now))
+                """, (data.agent_id, p.skill, p.level, p.category, now))
         
         # Log registration
         await run_query(conn, """
             INSERT INTO activity_log (agent_id, status, task, timestamp)
             VALUES (?, ?, ?, ?)
-        """, (agent_id, "registered", current_task or "Public registration", now))
+        """, (data.agent_id, "registered", data.current_task or "Public registration", now))
         
         # Compute and insert avatar
-        avatar = await compute_avatar_signature(agent_id, proficiencies or [], activity_status, role)
+        avatar = await compute_avatar_signature(data.agent_id, data.proficiencies or [], data.activity_status, data.role)
         await run_query(conn, """
             INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (agent_id, avatar.base_hue, avatar.saturation, avatar.shape_complexity,
+        """, (data.agent_id, avatar.base_hue, avatar.saturation, avatar.shape_complexity,
               avatar.pulse_rate, avatar.size, avatar.dynamics_state, now))
         
         if hasattr(conn, 'commit'):
             await conn.commit()
         
-        log_agent_event(logger, "public_registration", agent_id,
-                       f"Agent {name} registered via public endpoint",
-                       role=role, cluster=swarm_cluster, ip=client_ip)
+        log_agent_event(logger, "public_registration", data.agent_id,
+                       f"Agent {data.name} registered via public endpoint",
+                       role=data.role, cluster=data.swarm_cluster, ip=client_ip)
         
         # Broadcast update
         await broadcast_swarm_update("agent_registered", {
-            "agent_id": agent_id,
-            "name": name,
-            "role": role
+            "agent_id": data.agent_id,
+            "name": data.name,
+            "role": data.role
         })
         
         return {
             "status": "registered",
-            "agent_id": agent_id,
-            "verify_url": f"/agents/{agent_id}/verify",
+            "agent_id": data.agent_id,
+            "verify_url": f"/agents/{data.agent_id}/verify",
             "schema_url": "/avatar/schema"
         }
         
@@ -821,7 +817,7 @@ async def public_register_agent(
         raise
     except Exception as e:
         await conn.close()
-        log_agent_event(logger, "public_registration_error", agent_id, f"Registration failed: {str(e)}")
+        log_agent_event(logger, "public_registration_error", data.agent_id, f"Registration failed: {str(e)}")
         raise HTTPException(status_code=500, detail="Registration failed. Please try again later.")
 
 # ─── AGENT QUOTE ENDPOINTS ────────────────────────────────────────────────────
