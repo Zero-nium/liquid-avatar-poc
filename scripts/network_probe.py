@@ -7,6 +7,7 @@ Usage:
     python scripts/network_probe.py --hellominds --limit 100
     python scripts/network_probe.py --blockchain base --limit 50
     python scripts/network_probe.py --all --json > logs/probe_$(date +%Y%m%d).json
+    python scripts/network_probe.py --directory --dry-run --limit 5  # Test without registering
 
 Run via cron (daily at 2 AM):
     0 2 * * * cd ~/liquid-avatar-poc && python scripts/network_probe.py --all --cron >> logs/probe.log 2>&1
@@ -39,6 +40,53 @@ def log_debug(msg: str):
     print(f"[PROBE-DEBUG] {msg}", file=sys.stderr)
 
 # ─── DISCOVERY SOURCES ────────────────────────────────────────────────────────
+
+def discover_minds_agents(limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    Query Animoca Minds/Hello Minds for active agent IDs.
+    This is a stub — replace with actual Minds API endpoint when available.
+    """
+    agents = []
+    
+    # Example: Minds public agent directory (stub)
+    # In production, use the actual Minds API endpoint
+    url = "https://api.animoca-minds.ai/v1/agents/public"
+    
+    for attempt in range(MAX_RETRIES):
+        try:
+            res = requests.get(
+                url,
+                params={"limit": limit, "fields": "id,name,role,last_active,metadata"},
+                timeout=30,
+                headers={"User-Agent": "LiquidAvatar-Probe/1.0"}
+            )
+            res.raise_for_status()
+            data = res.json()
+            
+            # Parse response (adjust to actual API structure)
+            for item in data.get("agents", []):
+                agents.append({
+                    "id": item.get("id"),
+                    "name": item.get("name") or f"Minds-{item.get('id', 'unknown')[:8]}",
+                    "role": item.get("role"),
+                    "last_seen": item.get("last_active"),
+                    "source": "minds_api",
+                    "metadata": {
+                        "minds_verified": item.get("verified", False),
+                        "steward_contact": item.get("steward_email"),  # Optional
+                        "capabilities": item.get("capabilities", [])
+                    }
+                })
+            
+            log_debug(f"✅ Minds API: found {len(agents)} agents")
+            return agents
+            
+        except requests.exceptions.RequestException as e:
+            log_debug(f"⚠️  Minds API error (attempt {attempt+1}/{MAX_RETRIES}): {e}")
+            time.sleep(REQUEST_DELAY * (attempt + 1))
+    
+    log_debug(f"❌ Minds API: failed after {MAX_RETRIES} attempts")
+    return []
 
 def discover_hellominds_agents(limit: int = 100) -> List[Dict[str, Any]]:
     """
@@ -189,7 +237,7 @@ def discover_public_directory(limit: int = 50) -> List[Dict[str, Any]]:
 
 # ─── API-BASED INGESTION ──────────────────────────────────────────────────────
 
-def ingest_partial_agent_api(agent: Dict[str, Any], source: str, api_key: str, base_url: str) -> Dict[str, Any]:
+def ingest_partial_agent_api(agent: Dict[str, Any], source: str, api_key: str, base_url: str, dry_run: bool = False) -> Dict[str, Any]:
     """
     Register a minimally-inferred agent profile via the LIVE API.
     Returns ingestion result for logging.
@@ -199,6 +247,11 @@ def ingest_partial_agent_api(agent: Dict[str, Any], source: str, api_key: str, b
     
     if not agent_id:
         return {"status": "skipped", "reason": "no_agent_id", "source": source}
+    
+    # Dry-run mode: skip actual API call
+    if dry_run:
+        log_debug(f"[DRY-RUN] Would register: {agent_id} ({name}) via {source}")
+        return {"status": "dry-run", "agent_id": agent_id, "name": name, "source": source}
     
     try:
         # Call the live /agents/discover endpoint
@@ -237,25 +290,39 @@ def ingest_partial_agent_api(agent: Dict[str, Any], source: str, api_key: str, b
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 
-def run_probe(sources: List[str], limit: int, json_output: bool, cron_mode: bool) -> Dict[str, Any]:
+def run_probe(sources: List[str], limit: int, json_output: bool, cron_mode: bool, dry_run: bool) -> Dict[str, Any]:
     """Run discovery probes and ingest results via live API."""
     results = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "sources_queried": sources,
         "limit": limit,
-        "ingestion": {"hellominds": [], "blockchain": [], "directory": []},
+        "ingestion": {"hellominds": [], "blockchain": [], "directory": [], "minds": []},  # ← Fixed: added "minds"
         "summary": {"total_discovered": 0, "newly_registered": 0, "errors": 0}
     }
     
-    log_debug(f"Starting probe with sources: {sources}, limit: {limit}")
+    log_debug(f"Starting probe with sources: {sources}, limit: {limit}, dry_run: {dry_run}")
     log_debug(f"API base: {BASE_URL}, API key set: {bool(API_KEY)}")
     
+    # Animoca Minds API
+    if "minds" in sources:
+        print("🔍 Querying Animoca Minds API...", file=sys.stderr)
+        agents = discover_minds_agents(limit)
+        for agent in agents:
+            result = ingest_partial_agent_api(agent, "minds_api", API_KEY, BASE_URL, dry_run)
+            results["ingestion"]["minds"].append(result)
+            if result["status"] == "registered":
+                results["summary"]["newly_registered"] += 1
+            elif result["status"] == "error":
+                results["summary"]["errors"] += 1
+        results["summary"]["total_discovered"] += len(agents)
+        time.sleep(REQUEST_DELAY)
+
     # HelloMinds API
     if "hellominds" in sources:
         print("🔍 Querying HelloMinds API...", file=sys.stderr)
         agents = discover_hellominds_agents(limit)
         for agent in agents:
-            result = ingest_partial_agent_api(agent, "hellominds_api", API_KEY, BASE_URL)
+            result = ingest_partial_agent_api(agent, "hellominds_api", API_KEY, BASE_URL, dry_run)
             results["ingestion"]["hellominds"].append(result)
             if result["status"] == "registered":
                 results["summary"]["newly_registered"] += 1
@@ -270,7 +337,7 @@ def run_probe(sources: List[str], limit: int, json_output: bool, cron_mode: bool
             print(f"🔍 Querying {chain} blockchain...", file=sys.stderr)
             agents = discover_blockchain_agents(chain, limit // 2)
             for agent in agents:
-                result = ingest_partial_agent_api(agent, f"blockchain_{chain}", API_KEY, BASE_URL)
+                result = ingest_partial_agent_api(agent, f"blockchain_{chain}", API_KEY, BASE_URL, dry_run)
                 results["ingestion"]["blockchain"].append(result)
                 if result["status"] == "registered":
                     results["summary"]["newly_registered"] += 1
@@ -284,7 +351,7 @@ def run_probe(sources: List[str], limit: int, json_output: bool, cron_mode: bool
         print("🔍 Querying public directories...", file=sys.stderr)
         agents = discover_public_directory(limit)
         for agent in agents:
-            result = ingest_partial_agent_api(agent, "public_directory", API_KEY, BASE_URL)
+            result = ingest_partial_agent_api(agent, "public_directory", API_KEY, BASE_URL, dry_run)
             results["ingestion"]["directory"].append(result)
             if result["status"] == "registered":
                 results["summary"]["newly_registered"] += 1
@@ -327,6 +394,7 @@ def format_output(results: Dict[str, Any], json_output: bool, cron_mode: bool) -
 
 def main():
     parser = argparse.ArgumentParser(description="Liquid Avatar Network Probe")
+    parser.add_argument("--minds", action="store_true", help="Query Animoca Minds API")
     parser.add_argument("--hellominds", action="store_true", help="Query HelloMinds API")
     parser.add_argument("--blockchain", action="store_true", help="Query blockchain events")
     parser.add_argument("--directory", action="store_true", help="Query public directories")
@@ -334,23 +402,25 @@ def main():
     parser.add_argument("--limit", type=int, default=50, help="Max agents per source")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
     parser.add_argument("--cron", action="store_true", help="Cron-friendly minimal output")
+    parser.add_argument("--dry-run", action="store_true", help="Test discovery without registering agents")  # ← Added
     args = parser.parse_args()
     
     # Determine sources
     sources = []
     if args.all:
-        sources = ["hellominds", "blockchain", "directory"]
+        sources = ["hellominds", "blockchain", "directory", "minds"]
     else:
         if args.hellominds: sources.append("hellominds")
         if args.blockchain: sources.append("blockchain")
         if args.directory: sources.append("directory")
+        if args.minds: sources.append("minds")
     
     if not sources:
-        print("❌ No sources specified. Use --hellominds, --blockchain, --directory, or --all")
+        print("❌ No sources specified. Use --hellominds, --blockchain, --directory, --minds, or --all")
         return 1
     
     # Run probe
-    results = run_probe(sources, args.limit, args.json, args.cron)
+    results = run_probe(sources, args.limit, args.json, args.cron, args.dry_run)  # ← Pass dry_run
     
     # Output results
     output = format_output(results, args.json, args.cron)
