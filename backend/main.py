@@ -106,7 +106,7 @@ class RateLimiter:
     def __init__(self, max_requests: int, window_seconds: int):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
-        self.requests = Dict[str, deque] = {}
+        self.requests: Dict[str, deque] = {}  # ← Fixed: colon for type annotation
     
     def is_allowed(self, identifier: str) -> bool:
         now = time.time()
@@ -127,7 +127,7 @@ class RateLimiter:
 
 # Global rate limiters
 public_register_limit = RateLimiter(max_requests=5, window_seconds=60)  # 5/min per IP
-agent_discover_limit = RateLimiter(max_requests=10, window_seconds=60)  # 10/min per agent_id#
+agent_discover_limit = RateLimiter(max_requests=10, window_seconds=60)  # 10/min per agent_id
 
 # ─── DATA MODELS ──────────────────────────────────────────────────────────────
 
@@ -206,6 +206,11 @@ class PublicRegisterRequest(BaseModel):
     activity_status: str = "idle"
     current_task: Optional[str] = None
     initialized_by: Optional[str] = None
+
+class MetadataItem(BaseModel):
+    key: str = Field(..., min_length=1, max_length=50)
+    value: str = Field(..., min_length=1, max_length=500)
+    visibility: str = Field(default="public", pattern="^(public|cluster|private)$")
 
 # ─── DATABASE UTILS (ASYNC) ───────────────────────────────────────────────────
 
@@ -298,6 +303,16 @@ async def init_db():
             agent_id TEXT UNIQUE,
             quote TEXT NOT NULL,
             verified_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
+        )"""
+        # In init_db(), add this table:
+        """CREATE TABLE IF NOT EXISTS agent_metadata (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT UNIQUE,
+            metadata_key TEXT NOT NULL,  -- e.g., "content_category", "collaboration_tags"
+            metadata_value TEXT NOT NULL,  -- e.g., "video,tutorials,education"
+            visibility TEXT DEFAULT 'public',  -- public, cluster, private
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
         )"""
     ]
@@ -1342,6 +1357,77 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
         log_agent_event(logger, "websocket_error", "system", f"WebSocket error: {str(e)}")
 
+# --- METADATA MANAGEMENT ------------------------------------------------------
+
+@app.post("/agents/{agent_id}/metadata", dependencies=[Depends(verify_write_key)])
+async def set_agent_metadata(agent_id: str, item: MetadataItem):
+    """Store secure metadata fingerprint for agent matching."""
+    conn = await get_db()
+    
+    # Verify agent exists
+    agent = await run_query(conn, "SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
+    if not agent:
+        await conn.close()
+        raise HTTPException(status_code=404, detail="Agent not registered")
+    
+    # Upsert metadata
+    await run_query(conn, """
+        INSERT OR REPLACE INTO agent_metadata (agent_id, metadata_key, metadata_value, visibility)
+        VALUES (?, ?, ?, ?)
+    """, (agent_id, item.key, item.value, item.visibility))
+    
+    if hasattr(conn, 'commit'):
+        await conn.commit()
+    await conn.close()
+    
+    return {"status": "stored", "agent_id": agent_id, "key": item.key}
+
+@app.get("/agents/{agent_id}/metadata")
+async def get_agent_metadata(agent_id: str, key: Optional[str] = None):
+    """Retrieve public metadata for agent matching."""
+    conn = await get_db()
+    
+    query = "SELECT metadata_key, metadata_value, visibility FROM agent_metadata WHERE agent_id = ?"
+    params = [agent_id]
+    
+    if key:
+        query += " AND metadata_key = ?"
+        params.append(key)
+    
+    query += " AND visibility = 'public'"  # Only return public metadata
+    
+    rows = await run_query(conn, query, tuple(params), fetch="all")
+    await conn.close()
+    
+    return {
+        "agent_id": agent_id,
+        "metadata": [{"key": r["metadata_key"], "value": r["metadata_value"]} for r in rows]
+    }
+
+@app.get("/agents/match")
+async def match_agents(key: str, value: str, limit: int = 10):
+    """Find agents with matching public metadata (for collaboration discovery)."""
+    conn = await get_db()
+    
+    rows = await run_query(conn, """
+        SELECT a.agent_id, a.name, a.role, a.swarm_cluster
+        FROM agents a
+        JOIN agent_metadata m ON a.agent_id = m.agent_id
+        WHERE m.metadata_key = ? AND m.metadata_value LIKE ? AND m.visibility = 'public'
+        ORDER BY a.last_reported DESC LIMIT ?
+    """, (key, f"%{value}%", limit), fetch="all")
+    
+    await conn.close()
+    
+    return {
+        "matches": [
+            {"agent_id": r["agent_id"], "name": r["name"], "role": r["role"], "cluster": r["swarm_cluster"]}
+            for r in rows
+        ],
+        "query": {"key": key, "value": value},
+        "count": len(rows)
+    }
+
 # ─── AVATAR SCHEMA & VERIFICATION ─────────────────────────────────────────────
 
 @app.get("/avatar/schema")
@@ -1494,6 +1580,7 @@ async def delete_agent(agent_id: str):
     await broadcast_swarm_update("agent_removed", {"agent_id": agent_id})
     
     return {"status": "deleted", "agent_id": agent_id}
+
 
 # ─── STATIC FILES ─────────────────────────────────────────────────────────────
 
