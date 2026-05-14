@@ -305,14 +305,15 @@ async def init_db():
             verified_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
         )"""
-        # In init_db(), add this table:
+        # Replace the agent_metadata table definition with this Turso-compatible version:
         """CREATE TABLE IF NOT EXISTS agent_metadata (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent_id TEXT UNIQUE,
-            metadata_key TEXT NOT NULL,  -- e.g., "content_category", "collaboration_tags"
-            metadata_value TEXT NOT NULL,  -- e.g., "video,tutorials,education"
-            visibility TEXT DEFAULT 'public',  -- public, cluster, private
+            id INTEGER PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            metadata_key TEXT NOT NULL,
+            metadata_value TEXT NOT NULL,
+            visibility TEXT DEFAULT 'public',
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(agent_id, metadata_key),
             FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
         )"""
     ]
