@@ -9,30 +9,23 @@
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <style>
     :root {
-      /* PSP Medical Minimalism Palette */
       --bg-primary: #FFFFFF;
       --bg-surface: #F5F5F7;
       --bg-panel: #EEEEF0;
       --text-primary: #111111;
       --text-secondary: #666666;
       --text-muted: #999999;
-      --accent: #0066FF; /* Limited use - only for critical interactions */
+      --accent: #0066FF;
       --border: #DDDDDF;
       --glow: rgba(0, 102, 255, 0.1);
-      
-      /* Typography */
       --font-mono: 'IBM Plex Mono', monospace;
       --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      
-      /* Spacing */
       --space-xs: 4px;
       --space-sm: 8px;
       --space-md: 16px;
       --space-lg: 24px;
       --space-xl: 32px;
-      
-      /* Borders */
-      --border-radius: 0; /* Sharp edges per Designers Republic */
+      --border-radius: 0;
       --border-width: 1px;
     }
 
@@ -49,7 +42,6 @@
       grid-template-rows: auto 1fr auto;
     }
 
-    /* ─── HEADER ───────────────────────────────────────────────────────── */
     header {
       display: flex;
       align-items: center;
@@ -110,22 +102,6 @@
       opacity: 0.9;
     }
 
-    /* ─── CONTROLS CONTAINER (NEW) ─────────────────────────────────────── */
-    #controls {
-      position: absolute;
-      top: 70px;
-      right: var(--space-md);
-      z-index: 1000;
-      background: var(--bg-primary);
-      border: var(--border-width) solid var(--border);
-      padding: var(--space-sm);
-      border-radius: 0;
-      box-shadow: 0 4px 12px var(--glow);
-      font-family: var(--font-mono);
-      font-size: 10px;
-    }
-
-    /* ─── MAIN LAYOUT ──────────────────────────────────────────────────── */
     main {
       display: grid;
       grid-template-columns: 280px 1fr 280px;
@@ -134,7 +110,6 @@
       overflow: hidden;
     }
 
-    /* ─── SIDEBARS ─────────────────────────────────────────────────────── */
     .sidebar {
       display: flex;
       flex-direction: column;
@@ -156,7 +131,6 @@
       margin-bottom: var(--space-sm);
     }
 
-    /* Stats Grid */
     .stat-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -181,7 +155,6 @@
       font-size: 14px;
     }
 
-    /* Ontology Legend */
     .legend-item {
       display: flex;
       align-items: center;
@@ -196,7 +169,6 @@
       flex-shrink: 0;
     }
 
-    /* Dynamics Legend */
     .dynamics-badge {
       display: inline-flex;
       align-items: center;
@@ -215,7 +187,6 @@
     .dynamics-analysis { border-color: var(--accent); color: var(--accent); }
     .dynamics-verification { border-color: #9333EA; color: #9333EA; }
 
-    /* Agent Details Panel */
     .agent-details {
       display: flex;
       flex-direction: column;
@@ -248,7 +219,6 @@
     .stat-label { color: var(--text-secondary); }
     .stat-value { font-weight: 500; }
 
-    /* ─── CANVAS ───────────────────────────────────────────────────────── */
     #canvas-container {
       position: relative;
       background: var(--bg-primary);
@@ -262,7 +232,6 @@
       height: 100%;
     }
 
-    /* Tooltip */
     #tooltip {
       position: fixed;
       background: var(--bg-primary);
@@ -287,7 +256,6 @@
       letter-spacing: 0.5px;
     }
 
-    /* Loading State */
     #loading {
       position: absolute;
       top: 50%;
@@ -300,7 +268,6 @@
       letter-spacing: 1px;
     }
 
-    /* ─── FOOTER ───────────────────────────────────────────────────────── */
     footer {
       padding: var(--space-sm) var(--space-lg);
       border-top: var(--border-width) solid var(--border);
@@ -320,7 +287,6 @@
 
     .footer-link:hover { color: var(--accent); }
 
-    /* ─── RESPONSIVE ───────────────────────────────────────────────────── */
     @media (max-width: 1200px) {
       main { grid-template-columns: 1fr; }
       .sidebar { display: none; }
@@ -345,7 +311,7 @@
   </header>
 
   <main>
-    <!-- Left Sidebar: Stats + Ontology -->
+    <!-- Left Sidebar: Stats + Ontology + Connections -->
     <aside class="sidebar">
       <div>
         <div class="sidebar-title">Swarm Stats</div>
@@ -378,10 +344,11 @@
         <div class="sidebar-title">Dynamics</div>
         <div id="dynamics-legend"></div>
       </div>
-      
+
+      <!-- NEW: Connection Toggles -->
       <div>
         <div class="sidebar-title">Connections</div>
-        <div id="connection-toggles" style="display: flex; flex-direction: column; gap: 6px;">
+        <div id="connection-toggles" style="display: flex; flex-direction: column; gap: 8px;">
           <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 10px;">
             <input type="checkbox" checked data-conn="initialized" onchange="toggleConnection(this)">
             <span style="width: 10px; height: 10px; background: #475569; border-radius: 50%;"></span>
@@ -400,7 +367,7 @@
         </div>
       </div>
     </aside>
-      
+
     <!-- Center: Canvas -->
     <section id="canvas-container">
       <svg id="swarm-canvas"></svg>
@@ -429,8 +396,6 @@
       <a href="https://github.com/Zero-nium/liquid-avatar-poc" class="footer-link" target="_blank">GitHub</a>
     </div>
   </footer>
-
-  <!-- Controls Container (for connector toggles) -->
 
   <div id="tooltip"></div>
   <script src="app.js"></script>

@@ -91,6 +91,7 @@ async function loadSwarmData() {
       simulation.force('link').links(agentsData.edges);
       simulation.alpha(1).restart();
 
+      // Inside loadSwarmData(), replace the link data join with:
       link = link.data(agentsData.edges, d => `${d.source.id || d.source}-${d.target.id || d.target}`).join('line')
         .attr('class', d => `connection-line conn-${d.type || 'cluster_peer'}`)
         .attr('display', d => connectionFilters[d.type || 'cluster_peer'] ? 'inline' : 'none')
@@ -452,9 +453,9 @@ async function init() {
 }
 
 function setupSimulation(width, height) {
-  agentsData.nodes.forEach(d => initDynamics(d.id, d.avatar?.dynamics_state));
-
-  // Radial positions (angle, radius) for each role
+  agentsData.nodes.forEach(d => initDynamics(d.id));
+  
+  // Radial positions
   const clusterRadial = {
     'conductor': { angle: 0, radius: 0.2 },
     'architect': { angle: -0.7, radius: 0.4 },
@@ -464,11 +465,10 @@ function setupSimulation(width, height) {
     'general': { angle: 0, radius: 0.6 }
   };
 
+  console.log(`🔗 Creating simulation with ${agentsData.edges.length} edges`);
+
   simulation = d3.forceSimulation(agentsData.nodes)
-    .force('link', d3.forceLink(agentsData.edges)
-      .id(d => d.id)
-      .distance(100)
-      .strength(0.2))
+    .force('link', d3.forceLink(agentsData.edges).id(d => d.id).distance(100).strength(0.2))
     .force('charge', d3.forceManyBody().strength(-250))
     .force('center', d3.forceCenter(width / 2, height / 2))
     .force('collision', d3.forceCollide().radius(d => (d.avatar?.size ?? 20) * 2))
@@ -481,16 +481,28 @@ function setupSimulation(width, height) {
       return width / 2 + Math.sin(pos.angle) * 200;
     }).strength(0.08));
 
+  // Create Links
   link = g.append('g')
     .attr('class', 'connection-lines')
-    .attr('stroke', '#64748b')
-    .attr('stroke-opacity', 0.3)
-    .attr('stroke-dasharray', '2,2')
     .selectAll('line')
     .data(agentsData.edges)
     .join('line')
-    .attr('stroke-width', 1)
-    .attr('display', d => showConnections ? 'inline' : 'none');
+    .attr('class', d => `connection-line conn-${d.type || 'cluster_peer'}`)
+    .attr('display', d => connectionFilters[d.type || 'cluster_peer'] ? 'inline' : 'none')
+    .attr('stroke', d => ({
+      initialized: '#475569',
+      cluster_peer: '#cbd5e1',
+      beacon_interaction: '#10b981',
+      metadata_match: '#8b5cf6'
+    }[d.type] || '#cbd5e1'))
+    .attr('stroke-opacity', d => d.type === 'cluster_peer' ? 0.3 : 0.6)
+    .attr('stroke-width', d => d.type === 'initialized' ? 1.5 : 1)
+    .attr('stroke-dasharray', d => ({
+      initialized: 'none',
+      cluster_peer: '4,4',
+      beacon_interaction: '2,3',
+      metadata_match: '6,2,2,2'
+    }[d.type] || '4,4'));
 
   node = g.append('g')
     .selectAll('g')
@@ -608,22 +620,58 @@ async function selectAgent(agent) {
       `;
     }
     
+    // ─── HIGHLIGHT AGENT-SPECIFIC CONNECTIONS ────────────────────────────
+    let connectedCount = 0;
+    
+    link.each(function(d) {
+      const sourceId = d.source.id || d.source;
+      const targetId = d.target.id || d.target;
+      
+      if (sourceId === agent.id || targetId === agent.id) {
+        connectedCount++;
+        d3.select(this)
+          .attr('stroke', '#0066FF')  // Blue highlight
+          .attr('stroke-width', 3)
+          .attr('stroke-opacity', 0.9)
+          .attr('stroke-dasharray', 'none');
+      } else {
+        // Reset others to default styling
+        d3.select(this)
+          .attr('stroke', {
+            initialized: '#475569',
+            cluster_peer: '#cbd5e1',
+            beacon_interaction: '#10b981',
+            metadata_match: '#8b5cf6'
+          }[d.type] || '#cbd5e1')
+          .attr('stroke-width', d.type === 'initialized' ? 1.5 : 1)
+          .attr('stroke-opacity', d.type === 'cluster_peer' ? 0.3 : 0.6)
+          .attr('stroke-dasharray', {
+            initialized: 'none',
+            cluster_peer: '4,4',
+            beacon_interaction: '2,3',
+            metadata_match: '6,2,2,2'
+          }[d.type] || '4,4');
+      }
+    });
+    
+    // Add connection count to panel
+    details.innerHTML += `
+      <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);">
+        <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">
+          Direct Connections
+        </div>
+        <div style="font-size: 14px; font-weight: 600; color: var(--accent);">
+          ${connectedCount}
+        </div>
+      </div>
+    `;
+    // ─────────────────────────────────────────────────────────────────────
+    
     node.selectAll('.avatar-shape').attr('stroke-width', 2);
     const selected = node.filter(d => d.id === agent.id);
     selected.select('.avatar-shape').attr('stroke-width', 4);
   } catch (err) {
     console.error('Failed to fetch agent details:', err);
-    
-    details.innerHTML = `
-      <div style="margin-bottom: 12px;">
-        <div style="font-size: 16px; font-weight: 600; color: ${color}; margin-bottom: 4px;">
-          ${agent.name}
-        </div>
-        <div style="font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px;">
-          ${agent.role} · ${agent.cluster || 'no cluster'}
-        </div>
-      </div>
-    `;
   }
 }
 
@@ -755,10 +803,11 @@ function initConnectionToggles() {
   controls.appendChild(div);
 }
 
-function toggleConnection(cb) {
-  const type = cb.dataset.conn;
-  connectionFilters[type] = cb.checked;
-  link.attr('display', d => connectionFilters[d.type] ? 'inline' : 'none');
+function toggleConnection(checkbox) {
+  const type = checkbox.dataset.conn;
+  connectionFilters[type] = checkbox.checked;
+  // Update link visibility immediately
+  link.attr('display', d => connectionFilters[d.type || 'cluster_peer'] ? 'inline' : 'none');
 }
 
 // ─── CONTROLS ─────────────────────────────────────────────────────────────────
