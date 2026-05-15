@@ -14,6 +14,7 @@ let ontologyData = null;
 let selectedAgent = null;
 let showLabels = false;
 let animationFrame;
+let showConnections = true;
 
 // ─── WEBSOCKET CONNECTION ──────────────────────────────────────────────
 let swarmSocket = null;
@@ -270,7 +271,17 @@ function renderAvatar(selection) {
         .attr('font-weight', '500')
         .text(d.name);
     }
-
+    // In renderAvatar(), after drawing main shape:
+    if (d.cluster?.startsWith('discovered_via_minds')) {
+      // Different styling for Minds-discovered agents
+      el.select('.avatar-shape')
+        .attr('opacity', 0.5)  // Slightly brighter than GitHub discovered
+        .attr('stroke-dasharray', '3,3')  // Different dash pattern
+        .attr('stroke', '#7C3AED');  // Purple stroke for Minds
+  
+      el.append('title').text('Minds-discovered agent — click to prompt registration');
+    }
+    
     // ─── BEACON PULSE VISUALIZATION ──────────────────────────────────────
     if (d.last_beacon) {
       const timeSince = (Date.now() - new Date(d.last_beacon).getTime()) / 1000;
@@ -362,35 +373,45 @@ async function init() {
 }
 
 function setupSimulation(width, height) {
-  agentsData.nodes.forEach(d => initDynamics(d.id, d.avatar?.dynamics_state || 'idle'));
+  agentsData.nodes.forEach(d => initDynamics(d.id, d.avatar.dynamics_state));
+
+  // Radial positions (angle, radius) for each role
+  const clusterRadial = {
+    'conductor': { angle: 0, radius: 0.2 },      // Top, close to center
+    'architect': { angle: -0.7, radius: 0.4 },   // Upper left
+    'optimizer': { angle: 0.7, radius: 0.4 },    // Upper right
+    'auditor': { angle: -2.0, radius: 0.5 },     // Lower left
+    'chronicler': { angle: 2.0, radius: 0.5 },   // Lower right
+    'general': { angle: 0, radius: 0.6 }         // Bottom, far from center
+  };
 
   simulation = d3.forceSimulation(agentsData.nodes)
     .force('link', d3.forceLink(agentsData.edges)
       .id(d => d.id)
-      .distance(120)
-      .strength(0.5))
-    .force('charge', d3.forceManyBody().strength(-400))
+      .distance(100)
+      .strength(0.2))
+    .force('charge', d3.forceManyBody().strength(-250))
     .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collision', d3.forceCollide().radius(d => (d.avatar?.size ?? 20) * 2.5))
-    .force('cluster', d3.forceY(d => {
-      const roleY = {
-        'conductor': height * 0.3,
-        'architect': height * 0.4,
-        'optimizer': height * 0.5,
-        'auditor': height * 0.6,
-        'chronicler': height * 0.7,
-        'general': height * 0.55
-      };
-      return roleY[d.role] || height * 0.5;
+    .force('collision', d3.forceCollide().radius(d => d.avatar.size * 2))
+    .force('clusterRadial', d3.forceRadial(d => {
+      const pos = clusterRadial[d.role] || clusterRadial['general'];
+      return Math.min(width, height) * 0.3 * pos.radius;
+    }, width / 2, height / 2)
+    .strength(0.1))
+    .force('clusterAngle', d3.forceX(d => {
+      const pos = clusterRadial[d.role] || clusterRadial['general'];
+      return width / 2 + Math.sin(pos.angle) * 200;
     }).strength(0.08));
 
   link = g.append('g')
-    .attr('stroke', '#334155')
-    .attr('stroke-opacity', 0.4)
+    .attr('class', 'connection-lines')
+    .attr('stroke', '#64748b')  // Gray for awareness lines
+    .attr('stroke-opacity', 0.3)
+    .attr('stroke-dasharray', '2,2')  // Dashed for awareness vs solid for swarm
     .selectAll('line')
     .data(agentsData.edges)
     .join('line')
-    .attr('stroke-width', 1.5);
+    .attr('stroke-width', 1);
 
   node = g.append('g')
     .selectAll('g')
@@ -600,6 +621,11 @@ function toggleLabels() {
   showLabels = !showLabels;
   node.call(renderAvatar);
 }
+
+document.getElementById('toggle-connections')?.addEventListener('click', () => {
+  showConnections = !showConnections;
+  link.style('display', showConnections ? 'inline' : 'none');
+});
 
 // ─── DRAG ─────────────────────────────────────────────────────────────────────
 function dragstarted(event, d) {
