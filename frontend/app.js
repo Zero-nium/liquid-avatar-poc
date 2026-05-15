@@ -485,7 +485,7 @@ function setupSimulation(width, height) {
   link = g.append('g')
     .attr('class', 'connection-lines')
     .selectAll('line')
-    .data(agentsData.edges)
+    .data(agentsData.edges || [])
     .join('line')
     .attr('class', d => `connection-line conn-${d.type || 'cluster_peer'}`)
     .attr('display', d => connectionFilters[d.type || 'cluster_peer'] ? 'inline' : 'none')
@@ -620,52 +620,55 @@ async function selectAgent(agent) {
       `;
     }
     
-    // ─── HIGHLIGHT AGENT-SPECIFIC CONNECTIONS ────────────────────────────
-    let connectedCount = 0;
+// ─── HIGHLIGHT AGENT-SPECIFIC CONNECTIONS ────────────────────────────
+if (typeof link !== 'undefined' && link && !link.empty()) {
+  let connectedCount = 0;
+  
+  link.each(function(d) {
+    const sourceId = d.source.id || d.source;
+    const targetId = d.target.id || d.target;
     
-    link.each(function(d) {
-      const sourceId = d.source.id || d.source;
-      const targetId = d.target.id || d.target;
-      
-      if (sourceId === agent.id || targetId === agent.id) {
-        connectedCount++;
-        d3.select(this)
-          .attr('stroke', '#0066FF')  // Blue highlight
-          .attr('stroke-width', 3)
-          .attr('stroke-opacity', 0.9)
-          .attr('stroke-dasharray', 'none');
-      } else {
-        // Reset others to default styling
-        d3.select(this)
-          .attr('stroke', {
-            initialized: '#475569',
-            cluster_peer: '#cbd5e1',
-            beacon_interaction: '#10b981',
-            metadata_match: '#8b5cf6'
-          }[d.type] || '#cbd5e1')
-          .attr('stroke-width', d.type === 'initialized' ? 1.5 : 1)
-          .attr('stroke-opacity', d.type === 'cluster_peer' ? 0.3 : 0.6)
-          .attr('stroke-dasharray', {
-            initialized: 'none',
-            cluster_peer: '4,4',
-            beacon_interaction: '2,3',
-            metadata_match: '6,2,2,2'
-          }[d.type] || '4,4');
-      }
-    });
-    
-    // Add connection count to panel
-    details.innerHTML += `
-      <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);">
-        <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">
-          Direct Connections
-        </div>
-        <div style="font-size: 14px; font-weight: 600; color: var(--accent);">
-          ${connectedCount}
-        </div>
+    if (sourceId === agent.id || targetId === agent.id) {
+      connectedCount++;
+      d3.select(this)
+        .attr('stroke', '#0066FF')  // Blue highlight for agent-specific
+        .attr('stroke-width', 3)
+        .attr('stroke-opacity', 0.9)
+        .attr('stroke-dasharray', 'none');
+    } else {
+      // Reset others to default styling
+      d3.select(this)
+        .attr('stroke', {
+          initialized: '#475569',
+          cluster_peer: '#cbd5e1',
+          beacon_interaction: '#10b981',
+          metadata_match: '#8b5cf6'
+        }[d.type] || '#cbd5e1')
+        .attr('stroke-width', d.type === 'initialized' ? 1.5 : 1)
+        .attr('stroke-opacity', d.type === 'cluster_peer' ? 0.3 : 0.6)
+        .attr('stroke-dasharray', {
+          initialized: 'none',
+          cluster_peer: '4,4',
+          beacon_interaction: '2,3',
+          metadata_match: '6,2,2,2'
+        }[d.type] || '4,4');
+    }
+  });
+  
+  // Add connection count to panel
+  const details = document.getElementById('agent-details');
+  details.innerHTML += `
+    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);">
+      <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">
+        Direct Connections
       </div>
-    `;
-    // ─────────────────────────────────────────────────────────────────────
+      <div style="font-size: 14px; font-weight: 600; color: var(--accent);">
+        ${connectedCount}
+      </div>
+    </div>
+  `;
+}
+// ─────────────────────────────────────────────────────────────────────
     
     node.selectAll('.avatar-shape').attr('stroke-width', 2);
     const selected = node.filter(d => d.id === agent.id);
