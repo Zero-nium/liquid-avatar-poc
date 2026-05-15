@@ -199,7 +199,7 @@ function renderAvatar(selection) {
     const glow = getAgentGlow(d);
     const size = d.avatar?.size ?? 20;
     const sides = d.avatar?.shape_complexity ?? 6;
-    const isCircle = sides >= 10;
+    const isCircle = sides >= 20; // Only render as circle if 20+ sides (true circle)
 
     // Schema v1.2: Blur Factor (Signal Decay)
     const hoursSinceReport = d.last_reported 
