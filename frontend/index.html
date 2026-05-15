@@ -378,8 +378,29 @@
         <div class="sidebar-title">Dynamics</div>
         <div id="dynamics-legend"></div>
       </div>
+      
+      <div>
+        <div class="sidebar-title">Connections</div>
+        <div id="connection-toggles" style="display: flex; flex-direction: column; gap: 6px;">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 10px;">
+            <input type="checkbox" checked data-conn="initialized" onchange="toggleConnection(this)">
+            <span style="width: 10px; height: 10px; background: #475569; border-radius: 50%;"></span>
+            Initialized
+          </label>
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 10px;">
+            <input type="checkbox" checked data-conn="cluster_peer" onchange="toggleConnection(this)">
+            <span style="width: 10px; height: 10px; background: #cbd5e1; border-radius: 50%;"></span>
+            Cluster Peers
+          </label>
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 10px;">
+            <input type="checkbox" data-conn="beacon_interaction" onchange="toggleConnection(this)">
+            <span style="width: 10px; height: 10px; background: #10b981; border-radius: 50%;"></span>
+            Beacon Interactions
+          </label>
+        </div>
+      </div>
     </aside>
-
+      
     <!-- Center: Canvas -->
     <section id="canvas-container">
       <svg id="swarm-canvas"></svg>
@@ -410,7 +431,6 @@
   </footer>
 
   <!-- Controls Container (for connector toggles) -->
-  <div id="controls"></div>
 
   <div id="tooltip"></div>
   <script src="app.js"></script>

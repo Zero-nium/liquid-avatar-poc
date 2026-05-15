@@ -1206,59 +1206,62 @@ async def get_swarm_map():
     """Returns nodes and edges for D3.js force-directed visualization."""
     conn = await get_db()
     
-    # Fetch agents with optional avatar states (use defaults if missing)
+    # Fetch agents
     rows = await run_query(conn, """
         SELECT a.agent_id, a.name, a.initialized_by, a.role, a.swarm_cluster,
                av.base_hue, av.saturation, av.shape_complexity, av.pulse_rate, av.size, av.dynamics_state
-         FROM agents a
+        FROM agents a
         LEFT JOIN avatar_states av ON a.agent_id = av.agent_id
-         WHERE av.computed_at = (
+        WHERE av.computed_at = (
             SELECT MAX(computed_at) FROM avatar_states WHERE agent_id = a.agent_id
-         ) OR av.computed_at IS NULL
+        ) OR av.computed_at IS NULL
     """, fetch="all")
     
     nodes = []
-    edges = []
     agent_ids = set()
-
     for row in rows:
-        # Provide defaults for agents without avatar states (e.g., discovered agents)
-        base_hue = row["base_hue"] if row["base_hue"] is not None else 180
-        saturation = row["saturation"] if row["saturation"] is not None else 0.3
-        shape_complexity = row["shape_complexity"] if row["shape_complexity"] is not None else 6
-        pulse_rate = row["pulse_rate"] if row["pulse_rate"] is not None else 1.0
-        size = row["size"] if row["size"] is not None else 20
-        dynamics_state = row["dynamics_state"] if row["dynamics_state"] is not None else "idle"
-        
-        node = {
-            "id": row["agent_id"],
-            "name": row["name"],
-            "role": row["role"],
+        nodes.append({
+            "id": row["agent_id"], "name": row["name"], "role": row["role"], 
             "cluster": row["swarm_cluster"],
             "avatar": {
-                "base_hue": base_hue,
-                "saturation": saturation,
-                "shape_complexity": shape_complexity,
-                "pulse_rate": pulse_rate,
-                "size": size,
-                "dynamics_state": dynamics_state
+                "base_hue": row["base_hue"] if row["base_hue"] is not None else 180,
+                "saturation": row["saturation"] if row["saturation"] is not None else 0.3,
+                "shape_complexity": row["shape_complexity"] if row["shape_complexity"] is not None else 5,
+                "pulse_rate": row["pulse_rate"] if row["pulse_rate"] is not None else 1.0,
+                "size": row["size"] if row["size"] is not None else 25,
+                "dynamics_state": row["dynamics_state"] if row["dynamics_state"] is not None else "idle"
             }
-        }
-        nodes.append(node)
+        })
         agent_ids.add(row["agent_id"])
 
-    for row in nodes:
-        init_row = await run_query(conn, "SELECT initialized_by FROM agents WHERE agent_id = ?", (row["id"],), fetch="one")
-        if init_row and init_row["initialized_by"] and init_row["initialized_by"] in agent_ids:
-            edges.append({
-                "source": init_row["initialized_by"],
-                "target": row["id"],
-                "type": "initialization"
-            })
-
+    # ─── BUILD CONNECTION EDGES ──────────────────────────────────────────
+    edges = []
+    
+    # 1. Initialization relationships (already in DB)
+    init_edges = await run_query(conn, """
+        SELECT source_id, target_id FROM agent_connections 
+        WHERE connection_type = 'initialized'
+    """, fetch="all")
+    for e in init_edges:
+        if e["source_id"] in agent_ids and e["target_id"] in agent_ids:
+            edges.append({"source": e["source_id"], "target": e["target_id"], "type": "initialized"})
+    
+    # 2. Cluster peer connections (auto-generated for visualization)
+    cluster_groups = {}
+    for n in nodes:
+        if n["cluster"]:
+            cluster_groups.setdefault(n["cluster"], []).append(n["id"])
+    
+    for cluster, members in cluster_groups.items():
+        if len(members) > 1:
+            # Connect each member to the first member of the cluster (star topology)
+            center = members[0]
+            for member in members[1:]:
+                edges.append({"source": center, "target": member, "type": "cluster_peer"})
+    
     await conn.close()
     return {"nodes": nodes, "edges": edges, "node_count": len(nodes), "edge_count": len(edges)}
-
+    
 @app.post("/seed/mock-swarm")
 async def seed_mock_swarm():
     conn = await get_db()

@@ -687,6 +687,47 @@ function renderDynamicsLegend() {
   `).join('');
 }
 
+  // ─── HIGHLIGHT AGENT-SPECIFIC CONNECTIONS ────────────────────────────
+  const agentEdges = new Set();
+  
+  // Find all edges connected to this agent
+  link.each(function(d) {
+    const sourceId = d.source.id || d.source;
+    const targetId = d.target.id || d.target;
+    
+    if (sourceId === agent.id || targetId === agent.id) {
+      agentEdges.add(d);
+      d3.select(this)
+        .attr('stroke', '#0066FF')  // Blue for agent-specific
+        .attr('stroke-width', 3)
+        .attr('stroke-opacity', 0.9);
+    } else {
+      // Reset other edges to their type-based styling
+      d3.select(this)
+        .attr('stroke', {
+          initialized: '#475569',
+          cluster_peer: '#cbd5e1',
+          beacon_interaction: '#10b981',
+          metadata_match: '#8b5cf6'
+        }[d.type] || '#cbd5e1')
+        .attr('stroke-width', d.type === 'initialized' ? 1.5 : 1)
+        .attr('stroke-opacity', d.type === 'cluster_peer' ? 0.3 : 0.6);
+    }
+  });
+
+  // Add connection count to details panel
+  const details = document.getElementById('agent-details');
+  details.innerHTML += `
+    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);">
+      <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">
+        Connections
+      </div>
+      <div style="font-size: 12px; font-weight: 600;">
+        ${agentEdges.size} direct connections
+      </div>
+    </div>
+  `;
+
 // ─── CONNECTION TOGGLES UI ───────────────────────────────────────────────────
 function initConnectionToggles() {
   const controls = document.querySelector('.controls') || document.getElementById('controls');
