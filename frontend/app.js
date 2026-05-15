@@ -16,6 +16,14 @@ let showLabels = false;
 let animationFrame;
 let showConnections = true;
 
+// ─── CONNECTION FILTERS ──────────────────────────────────────────────────────
+const connectionFilters = {
+  initialized: true,
+  cluster_peer: true,
+  beacon_interaction: false,
+  metadata_match: false
+};
+
 // ─── WEBSOCKET CONNECTION ──────────────────────────────────────────────
 let swarmSocket = null;
 
@@ -83,10 +91,23 @@ async function loadSwarmData() {
       simulation.force('link').links(agentsData.edges);
       simulation.alpha(1).restart();
 
-      link = link.data(agentsData.edges, d => `${d.source.id}-${d.target.id}`).join('line')
-        .attr('stroke', '#334155')
-        .attr('stroke-opacity', 0.4)
-        .attr('stroke-width', 1.5);
+      link = link.data(agentsData.edges, d => `${d.source.id || d.source}-${d.target.id || d.target}`).join('line')
+        .attr('class', d => `connection-line conn-${d.type || 'cluster_peer'}`)
+        .attr('display', d => connectionFilters[d.type || 'cluster_peer'] ? 'inline' : 'none')
+        .attr('stroke', d => ({
+          initialized: '#475569',
+          cluster_peer: '#cbd5e1',
+          beacon_interaction: '#10b981',
+          metadata_match: '#8b5cf6'
+        }[d.type] || '#cbd5e1'))
+        .attr('stroke-opacity', d => d.type === 'cluster_peer' ? 0.3 : 0.6)
+        .attr('stroke-width', d => d.type === 'initialized' ? 1.5 : 1)
+        .attr('stroke-dasharray', d => ({
+          initialized: 'none',
+          cluster_peer: '4,4',
+          beacon_interaction: '2,3',
+          metadata_match: '6,2,2,2'
+        }[d.type] || '4,4'));
 
       node = node.data(agentsData.nodes, d => d.id).join('g')
         .attr('class', 'agent-node')
@@ -418,8 +439,8 @@ async function init() {
     updateStats();
     setupSimulation(width, height);
     startAnimationLoop();
-    
     connectSwarmWebSocket();
+    initConnectionToggles();
 
   } catch (err) {
     console.error('Failed to load swarm data:', err);
@@ -666,6 +687,39 @@ function renderDynamicsLegend() {
   `).join('');
 }
 
+// ─── CONNECTION TOGGLES UI ───────────────────────────────────────────────────
+function initConnectionToggles() {
+  const controls = document.querySelector('.controls') || document.getElementById('controls');
+  if (!controls) return;
+  
+  const div = document.createElement('div');
+  div.style.marginTop = '12px';
+  div.style.paddingTop = '8px';
+  div.style.borderTop = '1px solid #e2e8f0';
+  div.innerHTML = `
+    <div style="font-size: 10px; color: #64748b; margin-bottom: 6px; text-transform: uppercase;">Connections</div>
+    <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; margin-bottom: 4px; cursor: pointer;">
+      <input type="checkbox" checked data-conn="initialized" onchange="toggleConnection(this)"> 
+      <span style="width: 8px; height: 8px; background: #475569; border-radius: 50%; display: inline-block;"></span> Initialized
+    </label>
+    <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; margin-bottom: 4px; cursor: pointer;">
+      <input type="checkbox" checked data-conn="cluster_peer" onchange="toggleConnection(this)"> 
+      <span style="width: 8px; height: 8px; background: #cbd5e1; border-radius: 50%; display: inline-block;"></span> Cluster Peers
+    </label>
+    <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; margin-bottom: 4px; cursor: pointer;">
+      <input type="checkbox" data-conn="beacon_interaction" onchange="toggleConnection(this)"> 
+      <span style="width: 8px; height: 8px; background: #10b981; border-radius: 50%; display: inline-block;"></span> Beacon Interactions
+    </label>
+  `;
+  controls.appendChild(div);
+}
+
+function toggleConnection(cb) {
+  const type = cb.dataset.conn;
+  connectionFilters[type] = cb.checked;
+  link.attr('display', d => connectionFilters[d.type] ? 'inline' : 'none');
+}
+
 // ─── CONTROLS ─────────────────────────────────────────────────────────────────
 function resetZoom() {
   svg.transition().duration(750).call(
@@ -678,11 +732,6 @@ function toggleLabels() {
   showLabels = !showLabels;
   node.call(renderAvatar);
 }
-
-document.getElementById('toggle-connections')?.addEventListener('click', () => {
-  showConnections = !showConnections;
-  link.style('display', showConnections ? 'inline' : 'none');
-});
 
 // ─── DRAG ─────────────────────────────────────────────────────────────────────
 function dragstarted(event, d) {
