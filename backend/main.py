@@ -88,7 +88,7 @@ except ImportError as e:
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 
 DB_PATH = os.getenv("DB_PATH", "./liquid_avatar.db")
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 API_KEY = os.getenv("LIQUID_AVATAR_API_KEY", "dev-key-change-me-for-prod")
 
 TURSO_URL = os.getenv("TURSO_URL")
@@ -305,7 +305,25 @@ async def init_db():
             quote TEXT NOT NULL,
             verified_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
-        )"""
+        )""",
+        """CREATE TABLE IF NOT EXISTS agent_quotes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT UNIQUE,
+            quote TEXT NOT NULL,
+            verified_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
+        )""",
+        """CREATE TABLE IF NOT EXISTS agent_connections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            connection_type TEXT NOT NULL,
+            strength REAL DEFAULT 1.0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source_id, target_id, connection_type),
+            FOREIGN KEY (source_id) REFERENCES agents(agent_id),
+            FOREIGN KEY (target_id) REFERENCES agents(agent_id)
+        )""",
         # Replace the agent_metadata table definition with this Turso-compatible version:
         # """CREATE TABLE IF NOT EXISTS agent_metadata (
         #    id INTEGER PRIMARY KEY,
@@ -354,24 +372,46 @@ async def seed_ontology():
 async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficiency], activity_status: str, agent_role: Optional[str] = None) -> AvatarSignature:
     """Compute avatar visual signature. Priority: Role > Skill Domain."""
 
-    # ─── ROLE HIERARCHY OVERRIDE (Explicit parameter) ────────────────────────
+    # ─── SCHEMA V1.2: ROLE HIERARCHY OVERRIDE ────────────────────────────────
     forced_shape = None
     if agent_role:
         role_lower = agent_role.lower()
+        # Schema v1.2: Updated role → shape mapping
         council_shapes = {
-            "conductor": 8, "auditor": 8, "architect": 6,
-            "optimizer": 3, "chronicler": 12, "chronicle": 12
+            "conductor": 10,    # Decagon (was 8)
+            "auditor": 8,       # Octagon (confirmed)
+            "architect": 6,     # Hexagon (confirmed)
+            "optimizer": 3,     # Triangle (confirmed)
+            "chronicler": 12,   # Dodecagon (confirmed)
+            "chronicle": 12     # Alias
         }
         if role_lower in council_shapes:
             forced_shape = council_shapes[role_lower]
+        elif role_lower == "general":
+            forced_shape = 5    # Pentagon (was 6)
     # ────────────────────────────────────────────────────────────────────────
 
     conn = await get_db()
     
+    # ─── SCHEMA V1.2: HUE FALLBACK (Fix homogeneity bug) ─────────────────────
+    # Role-based base hues when no proficiencies exist
+    role_hues = {
+        "conductor": 180,   # Teal (authority)
+        "architect": 270,   # Violet (design)
+        "optimizer": 45,    # Amber (efficiency)
+        "auditor": 210,     # Blue (precision)
+        "chronicler": 300,  # Amethyst (permanence)
+        "chronicle": 300,
+        "general": 180      # Teal (neutral)
+    }
+    # ─────────────────────────────────────────────────────────────────────────
+
     if not proficiencies:
         dominant_domain = "general"
         avg_level = 0.5
         skill_count = 0
+        # Use role-based hue fallback
+        base_hue = role_hues.get(agent_role.lower() if agent_role else "general", 180)
     else:
         categories = {}
         for p in proficiencies:
@@ -383,12 +423,22 @@ async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficienc
         
         avg_level = sum(p.level for p in proficiencies) / len(proficiencies)
         skill_count = len(proficiencies)
+        
+        # Get hue from ontology
+        row = await run_query(conn, "SELECT base_hue FROM ontology WHERE domain = ?", (dominant_domain,), fetch="one")
+        base_hue = row["base_hue"] if row else 180
     
     row = await run_query(conn, "SELECT base_hue, spectrum, geometry_hint FROM ontology WHERE domain = ?", (dominant_domain,), fetch="one")
     if row:
         base_hue, spectrum_json, geometry_hint = row["base_hue"], row["spectrum"], row["geometry_hint"]
     else:
         base_hue, geometry_hint = 180, "hexagon"
+
+    # ─── SCHEMA V1.2: APPLY ROLE-BASED HUE IF NO PROFICIENCIES ───────────────
+    # Only override hue if we had no proficiencies AND role is in role_hues map
+    if not proficiencies and agent_role and agent_role.lower() in role_hues:
+        base_hue = role_hues[agent_role.lower()]
+    # ─────────────────────────────────────────────────────────────────────────
     
     if skill_count == 0:
         shape_complexity = 3
@@ -414,7 +464,7 @@ async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficienc
     saturation = 0.5 + (avg_level * 0.5)
     pulse_rate = 1.0 + (avg_level * 2.0)
     
-    # ─── ROLE HIERARCHY OVERRIDE (Query DB for role if not passed) ───────────
+    # ─── APPLY ROLE HIERARCHY OVERRIDE ───────────────────────────────────────
     if forced_shape is not None:
         shape_complexity = forced_shape
     # ─────────────────────────────────────────────────────────────────────────
@@ -1392,16 +1442,17 @@ async def match_agents(key: str, value: str, limit: int = 10):
 @app.get("/avatar/schema")
 async def get_avatar_schema():
     return {
-        "version": SCHEMA_VERSION,
+        "version": "1.2",  # Updated from 1.1
         "mapping_rules": {
             "color": {"source": "dominant proficiency category", "lookup": "ontology.domain → base_hue + spectrum"},
             "shape": {"source": "agent role", "mapping": {
+                # Schema v1.2: Updated role mapping
+                "conductor": {"geometry": "decagon", "complexity": 10},
                 "architect": {"geometry": "hexagon", "complexity": 6},
                 "optimizer": {"geometry": "triangle", "complexity": 3},
                 "auditor": {"geometry": "octagon", "complexity": 8},
-                "chronicler": {"geometry": "circle", "complexity": 12},
-                "conductor": {"geometry": "octagon", "complexity": 8},
-                "general": {"geometry": "hexagon", "complexity": 6}
+                "chronicler": {"geometry": "dodecagon", "complexity": 12},
+                "general": {"geometry": "pentagon", "complexity": 5}
             }},
             "size": {"formula": "20 + (skill_count * 3) + (avg_level * 15)", "range": "20px - 100px"},
             "saturation": {"formula": "0.5 + (avg_level * 0.5)", "range": "0.5 - 1.0"},
