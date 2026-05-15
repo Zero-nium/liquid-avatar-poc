@@ -374,22 +374,44 @@ async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficienc
 
     # ─── SCHEMA V1.2: ROLE HIERARCHY OVERRIDE ────────────────────────────────
     forced_shape = None
+    role_based_hue = None
+
     if agent_role:
         role_lower = agent_role.lower()
+        logger.info(f"Schema v1.2: Processing role '{role_lower}' for agent {agent_id}")
+    
         # Schema v1.2: Updated role → shape mapping
         council_shapes = {
-            "conductor": 10,    # Decagon (was 8)
-            "auditor": 8,       # Octagon (confirmed)
-            "architect": 6,     # Hexagon (confirmed)
-            "optimizer": 3,     # Triangle (confirmed)
-            "chronicler": 12,   # Dodecagon (confirmed)
-            "chronicle": 12     # Alias
+            "conductor": 10,    # Decagon
+            "auditor": 8,       # Octagon
+            "architect": 6,     # Hexagon
+            "optimizer": 3,     # Triangle
+            "chronicler": 12,   # Dodecagon
+            "chronicle": 12,    # Alias
+            "general": 5        # Pentagon
+        }  
+    
+        # Schema v1.2: Role-based hue mapping
+        role_hues = {
+            "conductor": 180,   # Teal
+            "architect": 270,   # Violet
+            "optimizer": 45,    # Amber
+            "auditor": 210,     # Blue
+            "chronicler": 300,  # Amethyst
+            "chronicle": 300,
+            "general": 180      # Teal
         }
+    
         if role_lower in council_shapes:
             forced_shape = council_shapes[role_lower]
-        elif role_lower == "general":
-            forced_shape = 5    # Pentagon (was 6)
-    # ────────────────────────────────────────────────────────────────────────
+            logger.info(f"  → Shape set to {forced_shape} for role '{role_lower}'")
+        else:
+            logger.warning(f"  → Unknown role '{role_lower}', using default shape")
+    
+        if role_lower in role_hues:
+            role_based_hue = role_hues[role_lower]
+        logger.info(f"  → Hue set to {role_based_hue}° for role '{role_lower}'")
+# ────────────────────────────────────────────────────────────────────────
 
     conn = await get_db()
     
@@ -428,16 +450,24 @@ async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficienc
         row = await run_query(conn, "SELECT base_hue FROM ontology WHERE domain = ?", (dominant_domain,), fetch="one")
         base_hue = row["base_hue"] if row else 180
     
+    # ... existing ontology query code ...
+
     row = await run_query(conn, "SELECT base_hue, spectrum, geometry_hint FROM ontology WHERE domain = ?", (dominant_domain,), fetch="one")
     if row:
         base_hue, spectrum_json, geometry_hint = row["base_hue"], row["spectrum"], row["geometry_hint"]
     else:
         base_hue, geometry_hint = 180, "hexagon"
 
-    # ─── SCHEMA V1.2: APPLY ROLE-BASED HUE IF NO PROFICIENCIES ───────────────
-    # Only override hue if we had no proficiencies AND role is in role_hues map
-    if not proficiencies and agent_role and agent_role.lower() in role_hues:
-        base_hue = role_hues[agent_role.lower()]
+    # ─── SCHEMA V1.2: APPLY ROLE-BASED VALUES IF NO PROFICIENCIES ──────────
+    if not proficiencies:
+        if role_based_hue is not None:
+            base_hue = role_based_hue
+            logger.info(f"Applied role-based hue {base_hue}° for {agent_id}")
+    
+        if forced_shape is not None:
+            shape_complexity = forced_shape
+            logger.info(f"Applied role-based shape {shape_complexity} for {agent_id}")
+
     # ─────────────────────────────────────────────────────────────────────────
     
     if skill_count == 0:
