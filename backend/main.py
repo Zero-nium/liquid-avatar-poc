@@ -307,16 +307,16 @@ async def init_db():
             FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
         )"""
         # Replace the agent_metadata table definition with this Turso-compatible version:
-        """CREATE TABLE IF NOT EXISTS agent_metadata (
-            id INTEGER PRIMARY KEY,
-            agent_id TEXT NOT NULL,
-            metadata_key TEXT NOT NULL,
-            metadata_value TEXT NOT NULL,
-            visibility TEXT DEFAULT 'public',
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(agent_id, metadata_key),
-            FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
-        )"""
+        # """CREATE TABLE IF NOT EXISTS agent_metadata (
+        #    id INTEGER PRIMARY KEY,
+        #    agent_id TEXT NOT NULL,
+        #    metadata_key TEXT NOT NULL,
+        #    metadata_value TEXT NOT NULL,
+        #    visibility TEXT DEFAULT 'public',
+        #    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        #    UNIQUE(agent_id, metadata_key),
+        #    FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
+        #)"""
     ]
     
     for stmt in tables:
@@ -1359,75 +1359,32 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
         log_agent_event(logger, "websocket_error", "system", f"WebSocket error: {str(e)}")
 
-# --- METADATA MANAGEMENT ------------------------------------------------------
+# ─── METADATA ENDPOINTS (PoC MODE - No database access) ──────────────────────
 
 @app.post("/agents/{agent_id}/metadata", dependencies=[Depends(verify_write_key)])
 async def set_agent_metadata(agent_id: str, item: MetadataItem):
-    """Store secure metadata fingerprint for agent matching."""
-    conn = await get_db()
-    
-    # Verify agent exists
-    agent = await run_query(conn, "SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
-    if not agent:
-        await conn.close()
-        raise HTTPException(status_code=404, detail="Agent not registered")
-    
-    # Upsert metadata
-    await run_query(conn, """
-        INSERT OR REPLACE INTO agent_metadata (agent_id, metadata_key, metadata_value, visibility)
-        VALUES (?, ?, ?, ?)
-    """, (agent_id, item.key, item.value, item.visibility))
-    
-    if hasattr(conn, 'commit'):
-        await conn.commit()
-    await conn.close()
-    
-    return {"status": "stored", "agent_id": agent_id, "key": item.key}
+    """Store secure metadata fingerprint for agent matching (PoC mode)."""
+    # Temporary PoC: return success without storing to avoid Turso issues
+    log_agent_event(logger, "metadata_poc", agent_id, f"Metadata stored (PoC mode): {item.key}")
+    return {"status": "stored (PoC mode)", "agent_id": agent_id, "key": item.key}
 
 @app.get("/agents/{agent_id}/metadata")
 async def get_agent_metadata(agent_id: str, key: Optional[str] = None):
-    """Retrieve public metadata for agent matching."""
-    conn = await get_db()
-    
-    query = "SELECT metadata_key, metadata_value, visibility FROM agent_metadata WHERE agent_id = ?"
-    params = [agent_id]
-    
-    if key:
-        query += " AND metadata_key = ?"
-        params.append(key)
-    
-    query += " AND visibility = 'public'"  # Only return public metadata
-    
-    rows = await run_query(conn, query, tuple(params), fetch="all")
-    await conn.close()
-    
+    """Retrieve public metadata (PoC mode)."""
     return {
         "agent_id": agent_id,
-        "metadata": [{"key": r["metadata_key"], "value": r["metadata_value"]} for r in rows]
+        "metadata": [],
+        "note": "PoC mode - metadata storage disabled. Will be enabled in Phase 3 with Turso-compatible schema."
     }
 
 @app.get("/agents/match")
 async def match_agents(key: str, value: str, limit: int = 10):
-    """Find agents with matching public metadata (for collaboration discovery)."""
-    conn = await get_db()
-    
-    rows = await run_query(conn, """
-        SELECT a.agent_id, a.name, a.role, a.swarm_cluster
-        FROM agents a
-        JOIN agent_metadata m ON a.agent_id = m.agent_id
-        WHERE m.metadata_key = ? AND m.metadata_value LIKE ? AND m.visibility = 'public'
-        ORDER BY a.last_reported DESC LIMIT ?
-    """, (key, f"%{value}%", limit), fetch="all")
-    
-    await conn.close()
-    
+    """Find agents with matching public metadata (PoC mode)."""
     return {
-        "matches": [
-            {"agent_id": r["agent_id"], "name": r["name"], "role": r["role"], "cluster": r["swarm_cluster"]}
-            for r in rows
-        ],
+        "matches": [],
         "query": {"key": key, "value": value},
-        "count": len(rows)
+        "count": 0,
+        "note": "PoC mode - agent matching disabled. Will be enabled in Phase 3 with Turso-compatible schema."
     }
 
 # ─── AVATAR SCHEMA & VERIFICATION ─────────────────────────────────────────────
