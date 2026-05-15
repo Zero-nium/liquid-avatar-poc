@@ -1,7 +1,7 @@
 /**
-Liquid Avatar — Swarm Visualization Engine
+Liquid Avatar — Swarm Visualization Engine v1.2
 D3.js force-directed graph with SVG rendering
-Implements schema v1.1: Expertise→Color, Role→Geometry, Activity→Dynamics
+Implements Council feedback: Schema v1.2 shapes, blur/vibration/permanence, connector toggles
 */
 const API_BASE = window.location.origin.includes('localhost')
   ? 'http://localhost:8000'
@@ -132,11 +132,13 @@ function getAgentGlow(agent) {
 }
 
 // ─── GEOMETRY GENERATORS ──────────────────────────────────────────────────────
-function generatePolygon(cx, cy, r, sides, rotation = 0) {
+function generatePolygon(cx, cy, r, sides, rotation = 0, vibration = 0) {
   const points = [];
   for (let i = 0; i < sides; i++) {
     const angle = (i * 2 * Math.PI / sides) + rotation - Math.PI / 2;
-    points.push([cx + r * Math.cos(angle), cy + r * Math.sin(angle)]);
+    // Schema v1.2: Vertex Vibration for architects
+    const vibOffset = vibration * Math.sin(Date.now() * 0.005 + i);
+    points.push([cx + (r + vibOffset) * Math.cos(angle), cy + (r + vibOffset) * Math.sin(angle)]);
   }
   return points.map(p => p.join(',')).join(' ');
 }
@@ -163,7 +165,12 @@ function computeDynamicsTransform(agent, time) {
 
   switch (dynamics) {
     case 'idle':
-      opacity = 0.4 + 0.2 * Math.sin(state.phase + time * state.speed);
+      // Schema v1.2: Static Permanence for chroniclers (no breathing)
+      if (agent.role === 'chronicler' || agent.role === 'chronicle') {
+        opacity = 0.85; // Steady luminosity
+      } else {
+        opacity = 0.4 + 0.2 * Math.sin(state.phase + time * state.speed);
+      }
       break;
     case 'input':
       scale = 0.92 + 0.08 * Math.sin(state.phase + time * state.speed * 2);
@@ -194,18 +201,39 @@ function renderAvatar(selection) {
     const sides = d.avatar?.shape_complexity ?? 6;
     const isCircle = sides >= 10;
 
-    // Glow effect (outer halo)
-    el.append('circle')
-      .attr('r', size * 1.6)
-      .attr('fill', glow)
-      .attr('opacity', 0.08)
-      .attr('class', 'glow-outer');
-
-    el.append('circle')
-      .attr('r', size * 1.2)
-      .attr('fill', glow)
-      .attr('opacity', 0.15)
-      .attr('class', 'glow-inner');
+    // Schema v1.2: Blur Factor (Signal Decay)
+    const hoursSinceReport = d.last_reported 
+      ? (Date.now() - new Date(d.last_reported).getTime()) / 3600000 
+      : 0;
+    const blurAmount = Math.min(hoursSinceReport / 24, 3); // Max 3px blur after 24h
+    
+    // Apply blur to entire agent group if stale
+    if (blurAmount > 0.5) {
+      el.attr('filter', `blur(${blurAmount}px)`);
+      // Reduce glow opacity for stale agents
+      el.append('circle')
+        .attr('r', size * 1.6)
+        .attr('fill', glow)
+        .attr('opacity', 0.04)
+        .attr('class', 'glow-outer');
+      el.append('circle')
+        .attr('r', size * 1.2)
+        .attr('fill', glow)
+        .attr('opacity', 0.08)
+        .attr('class', 'glow-inner');
+    } else {
+      // Normal glow for fresh agents
+      el.append('circle')
+        .attr('r', size * 1.6)
+        .attr('fill', glow)
+        .attr('opacity', 0.08)
+        .attr('class', 'glow-outer');
+      el.append('circle')
+        .attr('r', size * 1.2)
+        .attr('fill', glow)
+        .attr('opacity', 0.15)
+        .attr('class', 'glow-inner');
+    }
 
     // Main shape
     if (isCircle) {
@@ -229,7 +257,10 @@ function renderAvatar(selection) {
           .attr('opacity', 0.6);
       }
     } else {
-      const points = generatePolygon(0, 0, size, sides);
+      // Schema v1.2: Vertex Vibration for architects (subtle point oscillation)
+      const vibration = (d.role === 'architect' && sides === 6) ? 1.5 : 0;
+      const points = generatePolygon(0, 0, size, sides, 0, vibration);
+      
       el.append('polygon')
         .attr('points', points)
         .attr('fill', color)
@@ -240,7 +271,7 @@ function renderAvatar(selection) {
 
       if (d.role === 'architect' && sides === 6) {
         for (let i = 1; i <= 2; i++) {
-          const innerPoints = generatePolygon(0, 0, size * (i / 3), sides);
+          const innerPoints = generatePolygon(0, 0, size * (i / 3), sides, 0, vibration * 0.5);
           el.append('polygon')
             .attr('points', innerPoints)
             .attr('fill', 'none')
@@ -271,14 +302,13 @@ function renderAvatar(selection) {
         .attr('font-weight', '500')
         .text(d.name);
     }
-    // In renderAvatar(), after drawing main shape:
+    
+    // Schema v1.2: Minds-discovered agent styling
     if (d.cluster?.startsWith('discovered_via_minds')) {
-      // Different styling for Minds-discovered agents
       el.select('.avatar-shape')
-        .attr('opacity', 0.5)  // Slightly brighter than GitHub discovered
-        .attr('stroke-dasharray', '3,3')  // Different dash pattern
-        .attr('stroke', '#7C3AED');  // Purple stroke for Minds
-  
+        .attr('opacity', 0.5)
+        .attr('stroke-dasharray', '3,3')
+        .attr('stroke', '#7C3AED');
       el.append('title').text('Minds-discovered agent — click to prompt registration');
     }
     
@@ -295,7 +325,6 @@ function renderAvatar(selection) {
           .attr('opacity', 0.6)
           .attr('class', 'beacon-pulse');
         
-        // Create infinite pulse animation using proper D3 chaining
         function pulseAnimation() {
           pulse.transition()
             .duration(2000)
@@ -373,16 +402,16 @@ async function init() {
 }
 
 function setupSimulation(width, height) {
-  agentsData.nodes.forEach(d => initDynamics(d.id, d.avatar.dynamics_state));
+  agentsData.nodes.forEach(d => initDynamics(d.id, d.avatar?.dynamics_state));
 
   // Radial positions (angle, radius) for each role
   const clusterRadial = {
-    'conductor': { angle: 0, radius: 0.2 },      // Top, close to center
-    'architect': { angle: -0.7, radius: 0.4 },   // Upper left
-    'optimizer': { angle: 0.7, radius: 0.4 },    // Upper right
-    'auditor': { angle: -2.0, radius: 0.5 },     // Lower left
-    'chronicler': { angle: 2.0, radius: 0.5 },   // Lower right
-    'general': { angle: 0, radius: 0.6 }         // Bottom, far from center
+    'conductor': { angle: 0, radius: 0.2 },
+    'architect': { angle: -0.7, radius: 0.4 },
+    'optimizer': { angle: 0.7, radius: 0.4 },
+    'auditor': { angle: -2.0, radius: 0.5 },
+    'chronicler': { angle: 2.0, radius: 0.5 },
+    'general': { angle: 0, radius: 0.6 }
   };
 
   simulation = d3.forceSimulation(agentsData.nodes)
@@ -392,12 +421,11 @@ function setupSimulation(width, height) {
       .strength(0.2))
     .force('charge', d3.forceManyBody().strength(-250))
     .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collision', d3.forceCollide().radius(d => d.avatar.size * 2))
+    .force('collision', d3.forceCollide().radius(d => (d.avatar?.size ?? 20) * 2))
     .force('clusterRadial', d3.forceRadial(d => {
       const pos = clusterRadial[d.role] || clusterRadial['general'];
       return Math.min(width, height) * 0.3 * pos.radius;
-    }, width / 2, height / 2)
-    .strength(0.1))
+    }, width / 2, height / 2).strength(0.1))
     .force('clusterAngle', d3.forceX(d => {
       const pos = clusterRadial[d.role] || clusterRadial['general'];
       return width / 2 + Math.sin(pos.angle) * 200;
@@ -405,13 +433,14 @@ function setupSimulation(width, height) {
 
   link = g.append('g')
     .attr('class', 'connection-lines')
-    .attr('stroke', '#64748b')  // Gray for awareness lines
+    .attr('stroke', '#64748b')
     .attr('stroke-opacity', 0.3)
-    .attr('stroke-dasharray', '2,2')  // Dashed for awareness vs solid for swarm
+    .attr('stroke-dasharray', '2,2')
     .selectAll('line')
     .data(agentsData.edges)
     .join('line')
-    .attr('stroke-width', 1);
+    .attr('stroke-width', 1)
+    .attr('display', d => showConnections ? 'inline' : 'none');
 
   node = g.append('g')
     .selectAll('g')
@@ -455,11 +484,11 @@ function startAnimationLoop() {
         .attr('opacity', 0.9 * dynamics.opacity);
 
       el.select('.glow-outer')
-        .attr('opacity', 0.08 * dynamics.opacity)
+        .attr('opacity', dynamics.opacity * 0.08)
         .attr('r', (d.avatar?.size ?? 20) * 1.6 * dynamics.scale);
 
       el.select('.glow-inner')
-        .attr('opacity', 0.15 * dynamics.opacity)
+        .attr('opacity', dynamics.opacity * 0.15)
         .attr('r', (d.avatar?.size ?? 20) * 1.2 * dynamics.scale);
     });
 
@@ -535,7 +564,6 @@ async function selectAgent(agent) {
   } catch (err) {
     console.error('Failed to fetch agent details:', err);
     
-    // Fallback to basic display if fetch fails
     details.innerHTML = `
       <div style="margin-bottom: 12px;">
         <div style="font-size: 16px; font-weight: 600; color: ${color}; margin-bottom: 4px;">
