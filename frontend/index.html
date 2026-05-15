@@ -110,6 +110,21 @@
       opacity: 0.9;
     }
 
+    /* ─── CONTROLS CONTAINER (NEW) ─────────────────────────────────────── */
+    #controls {
+      position: absolute;
+      top: 70px;
+      right: var(--space-md);
+      z-index: 1000;
+      background: var(--bg-primary);
+      border: var(--border-width) solid var(--border);
+      padding: var(--space-sm);
+      border-radius: 0;
+      box-shadow: 0 4px 12px var(--glow);
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+
     /* ─── MAIN LAYOUT ──────────────────────────────────────────────────── */
     main {
       display: grid;
@@ -393,6 +408,9 @@
       <a href="https://github.com/Zero-nium/liquid-avatar-poc" class="footer-link" target="_blank">GitHub</a>
     </div>
   </footer>
+
+  <!-- Controls Container (for connector toggles) -->
+  <div id="controls"></div>
 
   <div id="tooltip"></div>
   <script src="app.js"></script>
