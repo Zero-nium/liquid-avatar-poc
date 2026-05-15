@@ -260,6 +260,33 @@ function renderAvatar(selection) {
       // Schema v1.2: Vertex Vibration for architects (subtle point oscillation)
       const vibration = (d.role === 'architect' && sides === 6) ? 1.5 : 0;
       const points = generatePolygon(0, 0, size, sides, 0, vibration);
+
+      // Schema v1.2: Add inner detail for high-complexity shapes to distinguish from circles
+      if (sides >= 10 && !isCircle) {
+        // Draw inner polygon to show it's not a circle
+        const innerPoints = generatePolygon(0, 0, size * 0.5, sides);
+        el.append('polygon')
+          .attr('points', innerPoints)
+          .attr('fill', 'none')
+          .attr('stroke', glow)
+          .attr('stroke-width', 1)
+          .attr('opacity', 0.4)
+          .attr('class', 'shape-detail');
+  
+        // Draw vertex markers
+        for (let i = 0; i < sides; i++) {
+          const angle = (i * 2 * Math.PI / sides) - Math.PI / 2;
+          const vx = size * 0.7 * Math.cos(angle);
+          const vy = size * 0.7 * Math.sin(angle);
+            el.append('circle')
+              .attr('cx', vx)
+              .attr('cy', vy)
+              .attr('r', 2)
+              .attr('fill', glow)
+              .attr('opacity', 0.6)
+              .attr('class', 'vertex-marker');
+          }
+        }
       
       el.append('polygon')
         .attr('points', points)
@@ -354,6 +381,8 @@ function renderAvatar(selection) {
     }
   });
 }
+
+
 
 // ─── INITIALIZATION ───────────────────────────────────────────────────────────
 async function init() {
