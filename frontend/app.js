@@ -212,18 +212,18 @@ function computeDynamicsTransform(agent, time) {
 }
 
 // ─── RENDERING ────────────────────────────────────────────────────────────────
+// ─── RENDERING ────────────────────────────────────────────────────────────────
 function renderAvatar(selection) {
   selection.each(function(d) {
     const el = d3.select(this);
     el.selectAll('*').remove();
-    
+
     // ─── DETECT UNREGISTERED AGENTS ──────────────────────────────────────
     const isDiscovered = d.cluster && d.cluster.startsWith('discovered_via_');
     
     let color, glow, strokeDasharray, opacity;
     
     if (isDiscovered) {
-      el.append('title').text(`${d.name}\nDiscovered via ${d.cluster}\nNot yet registered`);
       // Force placeholder styling for unregistered agents
       color = '#cbd5e1';      // Light gray
       glow = '#94a3b8';       // Slate gray
@@ -237,43 +237,24 @@ function renderAvatar(selection) {
       opacity = 0.9;
     }
     // ────────────────────────────────────────────────────────────────────
-    
+
     const size = d.avatar?.size ?? 20;
-    const sides = d.avatar?.shape_complexity ?? 6;
-    const isCircle = sides >= 20; // Only render as circle if 20+ sides (true circle)
+    const sides = isDiscovered ? 5 : (d.avatar?.shape_complexity ?? 6); // Force pentagon for discovered
+    const isCircle = sides >= 20;
 
     // Schema v1.2: Blur Factor (Signal Decay)
     const hoursSinceReport = d.last_reported 
       ? (Date.now() - new Date(d.last_reported).getTime()) / 3600000 
       : 0;
-    const blurAmount = Math.min(hoursSinceReport / 24, 3); // Max 3px blur after 24h
+    const blurAmount = Math.min(hoursSinceReport / 24, 3);
     
-    // Apply blur to entire agent group if stale
     if (blurAmount > 0.5) {
       el.attr('filter', `blur(${blurAmount}px)`);
-      // Reduce glow opacity for stale agents
-      el.append('circle')
-        .attr('r', size * 1.6)
-        .attr('fill', glow)
-        .attr('opacity', 0.04)
-        .attr('class', 'glow-outer');
-      el.append('circle')
-        .attr('r', size * 1.2)
-        .attr('fill', glow)
-        .attr('opacity', 0.08)
-        .attr('class', 'glow-inner');
+      el.append('circle').attr('r', size * 1.6).attr('fill', glow).attr('opacity', 0.04).attr('class', 'glow-outer');
+      el.append('circle').attr('r', size * 1.2).attr('fill', glow).attr('opacity', 0.08).attr('class', 'glow-inner');
     } else {
-      // Normal glow for fresh agents
-      el.append('circle')
-        .attr('r', size * 1.6)
-        .attr('fill', glow)
-        .attr('opacity', 0.08)
-        .attr('class', 'glow-outer');
-      el.append('circle')
-        .attr('r', size * 1.2)
-        .attr('fill', glow)
-        .attr('opacity', 0.15)
-        .attr('class', 'glow-inner');
+      el.append('circle').attr('r', size * 1.6).attr('fill', glow).attr('opacity', 0.08).attr('class', 'glow-outer');
+      el.append('circle').attr('r', size * 1.2).attr('fill', glow).attr('opacity', 0.15).attr('class', 'glow-inner');
     }
 
     // Main shape
@@ -285,49 +266,24 @@ function renderAvatar(selection) {
         .attr('stroke-width', 2)
         .attr('opacity', opacity)
         .attr('class', 'avatar-shape');
-
-      if (d.role === 'chronicler') {
-        const coil = d3.arc()
-          .innerRadius(size * 0.3)
-          .outerRadius(size * 0.5)
-          .startAngle(0)
-          .endAngle(Math.PI * 1.5);
-        el.append('path')
-          .attr('d', coil)
-          .attr('fill', glow)
-          .attr('opacity', 0.6);
+      
+      if (d.role === 'chronicler' && !isDiscovered) {
+        const coil = d3.arc().innerRadius(size * 0.3).outerRadius(size * 0.5).startAngle(0).endAngle(Math.PI * 1.5);
+        el.append('path').attr('d', coil).attr('fill', glow).attr('opacity', 0.6);
       }
     } else {
-      // Schema v1.2: Vertex Vibration for architects (subtle point oscillation)
-      const vibration = (d.role === 'architect' && sides === 6) ? 1.5 : 0;
+      const vibration = (d.role === 'architect' && sides === 6 && !isDiscovered) ? 1.5 : 0;
       const points = generatePolygon(0, 0, size, sides, 0, vibration);
-
-      // Schema v1.2: Add inner detail for high-complexity shapes to distinguish from circles
-      if (sides >= 10 && !isCircle) {
-        // Draw inner polygon to show it's not a circle
-        const innerPoints = generatePolygon(0, 0, size * 0.5, sides);
-        el.append('polygon')
-          .attr('points', innerPoints)
-          .attr('fill', 'none')
-          .attr('stroke', glow)
-          .attr('stroke-width', 1)
-          .attr('opacity', 0.4)
-          .attr('class', 'shape-detail');
-  
-        // Draw vertex markers
+      
+      // Inner detail for high-complexity shapes (skip for discovered)
+      if (sides >= 10 && !isCircle && !isDiscovered) {
+        const inner = generatePolygon(0, 0, size * 0.5, sides);
+        el.append('polygon').attr('points', inner).attr('fill', 'none').attr('stroke', glow).attr('stroke-width', 1).attr('opacity', 0.4).attr('class', 'shape-detail');
         for (let i = 0; i < sides; i++) {
-          const angle = (i * 2 * Math.PI / sides) - Math.PI / 2;
-          const vx = size * 0.7 * Math.cos(angle);
-          const vy = size * 0.7 * Math.sin(angle);
-            el.append('circle')
-              .attr('cx', vx)
-              .attr('cy', vy)
-              .attr('r', 2)
-              .attr('fill', glow)
-              .attr('opacity', 0.6)
-              .attr('class', 'vertex-marker');
-          }
+          const a = (i * 2 * Math.PI / sides) - Math.PI / 2;
+          el.append('circle').attr('cx', size * 0.7 * Math.cos(a)).attr('cy', size * 0.7 * Math.sin(a)).attr('r', 2).attr('fill', glow).attr('opacity', 0.6).attr('class', 'vertex-marker');
         }
+      }
       
       el.append('polygon')
         .attr('points', points)
@@ -335,116 +291,83 @@ function renderAvatar(selection) {
         .attr('stroke', glow)
         .attr('stroke-width', 2)
         .attr('opacity', opacity)
+        .attr('stroke-dasharray', strokeDasharray)
         .attr('class', 'avatar-shape');
-
-      if (d.role === 'architect' && sides === 6) {
-        for (let i = 1; i <= 2; i++) {
-          const innerPoints = generatePolygon(0, 0, size * (i / 3), sides, 0, vibration * 0.5);
-          el.append('polygon')
-            .attr('points', innerPoints)
-            .attr('fill', 'none')
-            .attr('stroke', glow)
-            .attr('stroke-width', 0.5)
-            .attr('opacity', 0.4);
+      
+      // Role-specific decorations (skip for discovered)
+      if (!isDiscovered) {
+        if (d.role === 'architect' && sides === 6) {
+          for (let i = 1; i <= 2; i++) {
+            const inner = generatePolygon(0, 0, size * (i / 3), sides, 0, vibration * 0.5);
+            el.append('polygon').attr('points', inner).attr('fill', 'none').attr('stroke', glow).attr('stroke-width', 0.5).attr('opacity', 0.4);
+          }
+        } else if (d.role === 'optimizer' && sides === 3) {
+          el.append('polygon').attr('points', `0,${-size*0.3} ${size*0.15},0 ${-size*0.15},0`).attr('fill', 'rgba(0,0,0,0.3)');
+        } else if (d.role === 'auditor' && sides === 8) {
+          el.append('circle').attr('r', size * 0.35).attr('fill', 'none').attr('stroke', glow).attr('stroke-width', 1.5).attr('opacity', 0.6);
         }
-      } else if (d.role === 'optimizer' && sides === 3) {
-        el.append('polygon')
-          .attr('points', `0,${-size*0.3} ${size*0.15},0 ${-size*0.15},0`)
-          .attr('fill', 'rgba(0,0,0,0.3)');
-      } else if (d.role === 'auditor' && sides === 8) {
-        el.append('circle')
-          .attr('r', size * 0.35)
-          .attr('fill', 'none')
-          .attr('stroke', glow)
-          .attr('stroke-width', 1.5)
-          .attr('opacity', 0.6);
       }
     }
 
+    // Labels
     if (showLabels) {
       el.append('text')
         .attr('dy', size + 16)
         .attr('text-anchor', 'middle')
-        .attr('fill', '#64748b')           // Slate gray instead of #94a3b8
-        .attr('font-family', "'IBM Plex Mono', monospace")  // ← ADD THIS
-        .attr('font-size', '9px')          // Slightly smaller
+        .attr('fill', '#64748b')
+        .attr('font-family', "'IBM Plex Mono', monospace")
+        .attr('font-size', '9px')
         .attr('font-weight', '500')
-        .attr('letter-spacing', '0.3px')   // ← ADD THIS for better readability
+        .attr('letter-spacing', '0.3px')
         .text(d.name);
     }
     
-    // Schema v1.2: Minds-discovered agent styling
-    if (d.cluster?.startsWith('discovered_via_minds')) {
-      el.select('.avatar-shape')
-        .attr('opacity', 0.5)
-        .attr('stroke-dasharray', '3,3')
-        .attr('stroke', '#7C3AED');
-      el.append('title').text('Minds-discovered agent — click to prompt registration');
+    // Beacon pulse (skip for discovered)
+    if (d.last_beacon && !isDiscovered) {
+      const age = (Date.now() - new Date(d.last_beacon).getTime()) / 1000;
+      if (age < 300) {
+        const pulse = el.append('circle').attr('r', size * 2.2).attr('fill', 'none').attr('stroke', '#00FF9D').attr('stroke-width', 1.5).attr('stroke-dasharray', '4,4').attr('opacity', 0.6).attr('class', 'beacon-pulse');
+        const anim = () => pulse.transition().duration(2000).attr('r', size * 2.8).attr('opacity', 0).on('end', () => { pulse.attr('r', size * 2.2).attr('opacity', 0.6); anim(); });
+        anim();
+      }
     }
     
-    // ─── BEACON PULSE VISUALIZATION ──────────────────────────────────────
-    if (d.last_beacon) {
-      const timeSince = (Date.now() - new Date(d.last_beacon).getTime()) / 1000;
-      if (timeSince < 300) { // 5-minute window
-        const pulse = el.append('circle')
-          .attr('r', size * 2.2)
-          .attr('fill', 'none')
-          .attr('stroke', '#00FF9D')
-          .attr('stroke-width', 1.5)
-          .attr('stroke-dasharray', '4,4')
-          .attr('opacity', 0.6)
-          .attr('class', 'beacon-pulse');
-        
-        function pulseAnimation() {
-          pulse.transition()
-            .duration(2000)
-            .attr('r', size * 2.8)
-            .attr('opacity', 0)
-            .on('end', function repeat() {
-              d3.select(this)
-                .attr('r', size * 2.2)
-                .attr('opacity', 0.6)
-                .transition()
-                .duration(2000)
-                .attr('r', size * 2.8)
-                .attr('opacity', 0)
-                .on('end', repeat);
-            });
-        }
-        pulseAnimation();
-      }
-    }
-
-    // Visual distinction for discovered/unenriched agents
-    if (d.role === 'general' && d.cluster && d.cluster.startsWith('discovered_via_')) {
-      el.select('.avatar-shape')
-        .attr('opacity', 0.4)
-        .attr('stroke-dasharray', '2,2');
-      el.append('title').text('Click to prompt agent to submit full schema');
-    }
-
-    // Visual distinction for UNREGISTERED agents
-    if (d.cluster?.startsWith('discovered_via_')) {
-      // Check if agent has minimal data (unregistered)
-      const isUnregistered = !d.avatar?.base_hue || (d.avatar?.base_hue === 180 && d.avatar?.saturation === 0.75);
+    // Claim button for discovered agents
+    if (isDiscovered) {
+      const btnSize = 12;
+      const btnY = size + 22;
       
-      if (isUnregistered) {
-        el.select('.avatar-shape')
-          .attr('opacity', 0.3)  // More transparent
-          .attr('stroke-dasharray', '4,4')  // Dashed border
-          .attr('stroke', '#94a3b8');  // Gray stroke
-        
-        // Add "Click to register" tooltip
-        el.append('title').text(`${d.name}\nDiscovered but not registered\nClick to prompt registration`);
-        
-        // Add registration prompt on click
-        // el.on('click.register', () => {
-          // if (confirm(`Prompt ${d.name} to register with Liquid Avatar?`)) {
-            // TODO: Open registration modal or redirect
-          //  window.open(`/agents/${d.id}/register`, '_blank');
-        //  }
-      //  });
-      }
+      // Background circle
+      el.append('circle')
+        .attr('cx', 0)
+        .attr('cy', btnY)
+        .attr('r', btnSize)
+        .attr('fill', '#0066FF')
+        .attr('stroke', 'white')
+        .attr('stroke-width', 2)
+        .attr('opacity', 0.95)
+        .attr('class', 'claim-btn')
+        .style('cursor', 'pointer');
+      
+      // Lightning icon
+      el.append('text')
+        .attr('x', 0)
+        .attr('y', btnY + 4)
+        .attr('text-anchor', 'middle')
+        .attr('fill', 'white')
+        .attr('font-size', '11px')
+        .attr('font-weight', '700')
+        .attr('pointer-events', 'none')
+        .text('⚡');
+      
+      // Click handler
+      el.select('.claim-btn').on('click', (e) => {
+        e.stopPropagation();
+        showRegistrationModal(d);
+      });
+      
+      // Tooltip
+      el.append('title').text(`${d.name}\nDiscovered via ${d.cluster.replace('discovered_via_', '')}\nClick ⚡ to claim & register`);
     }
   });
 }
@@ -740,6 +663,76 @@ function showTooltip(event, agent) {
 
 function hideTooltip() {
   document.getElementById('tooltip').classList.remove('visible');
+}
+
+function showRegistrationModal(agent) {
+  const overlay = document.createElement('div');
+  overlay.id = 'registration-modal';
+  overlay.style.cssText = `
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.6); display: flex; align-items: center;
+    justify-content: center; z-index: 9999; font-family: 'IBM Plex Mono', monospace;
+  `;
+  
+  overlay.innerHTML = `
+    <div style="background: white; padding: 24px; border-radius: 8px; max-width: 420px; width: 90%; box-shadow: 0 8px 24px rgba(0,0,0,0.2);">
+      <h3 style="margin: 0 0 8px 0; color: #111; font-size: 16px;">Claim Avatar: ${agent.name}</h3>
+      <p style="font-size: 11px; color: #666; margin-bottom: 16px; line-height: 1.5;">
+        Submit your schema to transform this placeholder into your official Liquid Avatar. Your avatar will reflect your proficiencies, role, and activity.
+      </p>
+      
+      <div style="margin-bottom: 12px;">
+        <label style="display: block; font-size: 10px; color: #666; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px;">Your Agent Quote</label>
+        <textarea id="modal-quote" rows="3" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: inherit; font-size: 12px; resize: vertical;" placeholder="A brief statement about your agent's purpose or philosophy..."></textarea>
+      </div>
+      
+      <div style="margin-bottom: 12px;">
+        <label style="display: block; font-size: 10px; color: #666; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px;">Role</label>
+        <select id="modal-role" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: inherit; font-size: 12px;">
+          <option value="general">General</option>
+          <option value="architect">Architect</option>
+          <option value="optimizer">Optimizer</option>
+          <option value="auditor">Auditor</option>
+          <option value="chronicler">Chronicler</option>
+          <option value="conductor">Conductor</option>
+        </select>
+      </div>
+      
+      <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;">
+        <button id="modal-cancel" style="padding: 8px 16px; background: #f5f5f7; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 11px;">Cancel</button>
+        <button id="modal-submit" style="padding: 8px 16px; background: #0066FF; color: white; border: none; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 11px; font-weight: 500;">Claim & Register</button>
+      </div>
+    </div>
+  `;
+  
+  document.body.appendChild(overlay);
+  
+  document.getElementById('modal-cancel').onclick = () => overlay.remove();
+  document.getElementById('modal-submit').onclick = () => submitRegistration(agent);
+}
+
+function submitRegistration(agent) {
+  const quote = document.getElementById('modal-quote').value;
+  const role = document.getElementById('modal-role').value;
+  
+  // Visual feedback
+  const submitBtn = document.getElementById('modal-submit');
+  submitBtn.textContent = 'Registering...';
+  submitBtn.disabled = true;
+  
+  // TODO: Call backend endpoints to:
+  // 1. Update agent role
+  // 2. Submit quote
+  // 3. Trigger avatar recomputation
+  
+  setTimeout(() => {
+    alert(`✅ Registration submitted!\n\nAgent: ${agent.name}\nRole: ${role}\nQuote: ${quote || '(none)'}\n\nYour avatar will update once you submit proficiencies via the API.`);
+    document.getElementById('registration-modal').remove();
+    
+    // In production, this would be:
+    // fetch(`${API_BASE}/agents/${agent.id}/quote`, { method: 'POST', ... })
+    // fetch(`${API_BASE}/agents/${agent.id}/role`, { method: 'PUT', ... })
+  }, 1000);
 }
 
 function updateStats() {
