@@ -438,12 +438,12 @@ function renderAvatar(selection) {
         el.append('title').text(`${d.name}\nDiscovered but not registered\nClick to prompt registration`);
         
         // Add registration prompt on click
-        el.on('click.register', () => {
-          if (confirm(`Prompt ${d.name} to register with Liquid Avatar?`)) {
+        // el.on('click.register', () => {
+          // if (confirm(`Prompt ${d.name} to register with Liquid Avatar?`)) {
             // TODO: Open registration modal or redirect
-            window.open(`/agents/${d.id}/register`, '_blank');
-          }
-        });
+          //  window.open(`/agents/${d.id}/register`, '_blank');
+        //  }
+      //  });
       }
     }
   });

@@ -1269,11 +1269,18 @@ async def get_swarm_map():
             cluster_groups.setdefault(n["cluster"], []).append(n["id"])
     
     for cluster, members in cluster_groups.items():
+        if any(m.startswith('github-') for m in members):
+            continue # Don't connect GitHub-discovered agents
+
         if len(members) > 1:
             # Connect each member to the first member of the cluster (star topology)
             center = members[0]
             for member in members[1:]:
-                edges.append({"source": center, "target": member, "type": "cluster_peer"})
+                edges.append({
+                    "source": center, 
+                    "target": member, 
+                    "type": "cluster_peer"
+                    })
         if cluster.startswith('discovered_via'):
             continue # Don't connect unregistered agents automatically
 
