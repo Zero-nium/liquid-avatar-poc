@@ -1246,6 +1246,7 @@ async def get_swarm_map():
     edges = []
     
     # 1. Initialization relationships (from agent_connections table)
+    try:
     init_edges = await run_query(conn, """
         SELECT source_id, target_id FROM agent_connections 
         WHERE connection_type = 'initialized'
