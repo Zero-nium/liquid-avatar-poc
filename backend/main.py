@@ -680,6 +680,14 @@ async def agent_self_discover(request: AgentDiscoverRequest):
         VALUES (?, ?, ?, ?, ?, ?)
     """, (request.agent_id, request.name, request.initialized_by, request.swarm_cluster, request.role, now))
     
+    # ─── AUTO-CREATE INITIALIZATION CONNECTION ──────────────────────────
+    if request.initialized_by:
+        await run_query(conn, """
+            INSERT OR IGNORE INTO agent_connections (source_id, target_id, connection_type, created_at)
+            VALUES (?, ?, 'initialized', ?)
+        """, (request.initialized_by, request.agent_id, now))
+    # ────────────────────────────────────────────────────────────────────
+    
     if request.proficiencies:
         for p in request.proficiencies:
             exists = await run_query(conn, """

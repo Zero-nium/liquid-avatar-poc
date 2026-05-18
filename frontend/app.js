@@ -96,13 +96,13 @@ async function loadSwarmData() {
         .attr('class', d => `connection-line conn-${d.type || 'cluster_peer'}`)
         .attr('display', d => connectionFilters[d.type || 'cluster_peer'] ? 'inline' : 'none')
         .attr('stroke', d => ({
-          initialized: '#475569',
-          cluster_peer: '#cbd5e1',
-          beacon_interaction: '#10b981',
-          metadata_match: '#8b5cf6'
-        }[d.type] || '#cbd5e1'))
-        .attr('stroke-opacity', d => d.type === 'cluster_peer' ? 0.3 : 0.6)
-        .attr('stroke-width', d => d.type === 'initialized' ? 1.5 : 1)
+          initialized: '#64748b',      // Slate gray (instead of #475569)
+          cluster_peer: '#94a3b8',     // Lighter slate (instead of #cbd5e1)
+          beacon_interaction: '#10b981', // Keep green
+          metadata_match: '#8b5cf6'    // Keep purple
+        }[d.type] || '#94a3b8'))
+        .attr('stroke-opacity', d => d.type === 'cluster_peer' ? 0.4 : 0.7)  // Slightly more opacity
+        .attr('stroke-width', d => d.type === 'initialized' ? 1.2 : 1)       // Thinner lines
         .attr('stroke-dasharray', d => ({
           initialized: 'none',
           cluster_peer: '4,4',
@@ -346,9 +346,11 @@ function renderAvatar(selection) {
       el.append('text')
         .attr('dy', size + 16)
         .attr('text-anchor', 'middle')
-        .attr('fill', '#94a3b8')
-        .attr('font-size', '10px')
+        .attr('fill', '#64748b')           // Slate gray instead of #94a3b8
+        .attr('font-family', "'IBM Plex Mono', monospace")  // ← ADD THIS
+        .attr('font-size', '9px')          // Slightly smaller
         .attr('font-weight', '500')
+        .attr('letter-spacing', '0.3px')   // ← ADD THIS for better readability
         .text(d.name);
     }
     
@@ -490,13 +492,13 @@ function setupSimulation(width, height) {
     .attr('class', d => `connection-line conn-${d.type || 'cluster_peer'}`)
     .attr('display', d => connectionFilters[d.type || 'cluster_peer'] ? 'inline' : 'none')
     .attr('stroke', d => ({
-      initialized: '#475569',
-      cluster_peer: '#cbd5e1',
-      beacon_interaction: '#10b981',
-      metadata_match: '#8b5cf6'
-    }[d.type] || '#cbd5e1'))
-    .attr('stroke-opacity', d => d.type === 'cluster_peer' ? 0.3 : 0.6)
-    .attr('stroke-width', d => d.type === 'initialized' ? 1.5 : 1)
+      initialized: '#64748b',      // Slate gray (instead of #475569)
+      cluster_peer: '#94a3b8',     // Lighter slate (instead of #cbd5e1)
+      beacon_interaction: '#10b981', // Keep green
+      metadata_match: '#8b5cf6'    // Keep purple
+    }[d.type] || '#94a3b8'))
+    .attr('stroke-opacity', d => d.type === 'cluster_peer' ? 0.4 : 0.7)  // Slightly more opacity
+    .attr('stroke-width', d => d.type === 'initialized' ? 1.2 : 1)       // Thinner lines
     .attr('stroke-dasharray', d => ({
       initialized: 'none',
       cluster_peer: '4,4',
@@ -631,9 +633,9 @@ if (typeof link !== 'undefined' && link && !link.empty()) {
     if (sourceId === agent.id || targetId === agent.id) {
       connectedCount++;
       d3.select(this)
-        .attr('stroke', '#0066FF')  // Blue highlight for agent-specific
-        .attr('stroke-width', 3)
-        .attr('stroke-opacity', 0.9)
+        .attr('stroke', '#3b82f6')  // Softer blue (instead of #0066FF)
+        .attr('stroke-width', 2.5)   // Slightly thinner (instead of 3)
+        .attr('stroke-opacity', 0.8)
         .attr('stroke-dasharray', 'none');
     } else {
       // Reset others to default styling
