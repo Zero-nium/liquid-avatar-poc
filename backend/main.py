@@ -1245,7 +1245,7 @@ async def get_swarm_map():
     # ─── BUILD CONNECTION EDGES ──────────────────────────────────────────
     edges = []
     
-    # 1. Initialization relationships (already in DB)
+    # 1. Initialization relationships (from agent_connections table)
     init_edges = await run_query(conn, """
         SELECT source_id, target_id FROM agent_connections 
         WHERE connection_type = 'initialized'
@@ -1253,6 +1253,8 @@ async def get_swarm_map():
     for e in init_edges:
         if e["source_id"] in agent_ids and e["target_id"] in agent_ids:
             edges.append({"source": e["source_id"], "target": e["target_id"], "type": "initialized"})
+    except Exception as ex:
+        logger.warning(f"Could not fetch initialized edges: {ex}")            
     
     # 2. Cluster peer connections (auto-generated for visualization)
     cluster_groups = {}
@@ -1266,7 +1268,19 @@ async def get_swarm_map():
             center = members[0]
             for member in members[1:]:
                 edges.append({"source": center, "target": member, "type": "cluster_peer"})
-    
+        if cluster.startswith('discovered_via'):
+            continue # Don't connect unregistered agents automatically
+
+        if len(members) > 1:
+            # Connect each member to the first member of the cluster (star topology)
+            center = members[0]
+            for member in members[1:]:
+                edges.append({
+                    "source": center, 
+                    "target": member, 
+                    "type": "cluster_peer"
+                })
+
     await conn.close()
     return {"nodes": nodes, "edges": edges, "node_count": len(nodes), "edge_count": len(edges)}
     
@@ -1328,6 +1342,56 @@ async def seed_mock_swarm():
 @app.get("/health")
 async def health():
     return {"status": "ok", "schema_version": SCHEMA_VERSION, "origin": "Aura Quorum"}
+
+# --- DISCOVERY ENDPOINT ---------------------------------------------------------
+
+@app.get("/agents/unregistered")
+async def get_unregistered_agents(limit: int = 100, cluster: Optional[str] = None):
+    """
+    Return agents that have been discovered but not fully registered/enriched.
+    These are agents with minimal data (no proficiencies, no avatar computation).
+    """
+    conn = await get_db()
+    
+    query = """
+        SELECT a.agent_id, a.name, a.role, a.swarm_cluster, a.last_reported,
+               COUNT(p.id) as proficiency_count,
+               av.base_hue
+        FROM agents a
+        LEFT JOIN proficiencies p ON a.agent_id = p.agent_id
+        LEFT JOIN avatar_states av ON a.agent_id = av.agent_id
+        WHERE a.swarm_cluster LIKE 'discovered_via_%'
+    """
+    params = []
+    
+    if cluster:
+        query += " AND a.swarm_cluster = ?"
+        params.append(cluster)
+    
+    query += """
+        GROUP BY a.agent_id
+        HAVING proficiency_count = 0 OR av.base_hue IS NULL
+        ORDER BY a.last_reported DESC
+        LIMIT ?
+    """
+    params.append(limit)
+    
+    rows = await run_query(conn, query, tuple(params), fetch="all")
+    await conn.close()
+    
+    return {
+        "unregistered_agents": [
+            {
+                "id": r["agent_id"],
+                "name": r["name"],
+                "role": r["role"],
+                "cluster": r["swarm_cluster"],
+                "last_seen": r["last_reported"],
+                "status": "discovered_not_registered"
+            } for r in rows
+        ],
+        "count": len(rows)
+    }
 
 # ─── METHODOLOGY ENDPOINT ─────────────────────────────────────────────────────
 

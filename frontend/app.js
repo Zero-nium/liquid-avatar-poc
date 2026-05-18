@@ -216,9 +216,28 @@ function renderAvatar(selection) {
   selection.each(function(d) {
     const el = d3.select(this);
     el.selectAll('*').remove();
-
-    const color = getAgentColor(d);
-    const glow = getAgentGlow(d);
+    
+    // ─── DETECT UNREGISTERED AGENTS ──────────────────────────────────────
+    const isDiscovered = d.cluster && d.cluster.startsWith('discovered_via_');
+    
+    let color, glow, strokeDasharray, opacity;
+    
+    if (isDiscovered) {
+      el.append('title').text(`${d.name}\nDiscovered via ${d.cluster}\nNot yet registered`);
+      // Force placeholder styling for unregistered agents
+      color = '#cbd5e1';      // Light gray
+      glow = '#94a3b8';       // Slate gray
+      strokeDasharray = '4,4'; // Dashed border
+      opacity = 0.4;          // Dimmed
+    } else {
+      // Normal Schema v1.2 styling
+      color = getAgentColor(d);
+      glow = getAgentGlow(d);
+      strokeDasharray = 'none';
+      opacity = 0.9;
+    }
+    // ────────────────────────────────────────────────────────────────────
+    
     const size = d.avatar?.size ?? 20;
     const sides = d.avatar?.shape_complexity ?? 6;
     const isCircle = sides >= 20; // Only render as circle if 20+ sides (true circle)
@@ -264,7 +283,7 @@ function renderAvatar(selection) {
         .attr('fill', color)
         .attr('stroke', glow)
         .attr('stroke-width', 2)
-        .attr('opacity', 0.9)
+        .attr('opacity', opacity)
         .attr('class', 'avatar-shape');
 
       if (d.role === 'chronicler') {
@@ -315,7 +334,7 @@ function renderAvatar(selection) {
         .attr('fill', color)
         .attr('stroke', glow)
         .attr('stroke-width', 2)
-        .attr('opacity', 0.9)
+        .attr('opacity', opacity)
         .attr('class', 'avatar-shape');
 
       if (d.role === 'architect' && sides === 6) {
@@ -403,9 +422,32 @@ function renderAvatar(selection) {
         .attr('stroke-dasharray', '2,2');
       el.append('title').text('Click to prompt agent to submit full schema');
     }
+
+    // Visual distinction for UNREGISTERED agents
+    if (d.cluster?.startsWith('discovered_via_')) {
+      // Check if agent has minimal data (unregistered)
+      const isUnregistered = !d.avatar?.base_hue || (d.avatar?.base_hue === 180 && d.avatar?.saturation === 0.75);
+      
+      if (isUnregistered) {
+        el.select('.avatar-shape')
+          .attr('opacity', 0.3)  // More transparent
+          .attr('stroke-dasharray', '4,4')  // Dashed border
+          .attr('stroke', '#94a3b8');  // Gray stroke
+        
+        // Add "Click to register" tooltip
+        el.append('title').text(`${d.name}\nDiscovered but not registered\nClick to prompt registration`);
+        
+        // Add registration prompt on click
+        el.on('click.register', () => {
+          if (confirm(`Prompt ${d.name} to register with Liquid Avatar?`)) {
+            // TODO: Open registration modal or redirect
+            window.open(`/agents/${d.id}/register`, '_blank');
+          }
+        });
+      }
+    }
   });
 }
-
 
 
 // ─── INITIALIZATION ───────────────────────────────────────────────────────────
