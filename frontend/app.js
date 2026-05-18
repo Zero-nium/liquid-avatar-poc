@@ -638,16 +638,16 @@ if (typeof link !== 'undefined' && link && !link.empty()) {
         .attr('stroke-opacity', 0.8)
         .attr('stroke-dasharray', 'none');
     } else {
-      // Reset others to default styling
+      // NEW:
       d3.select(this)
         .attr('stroke', {
-          initialized: '#475569',
-          cluster_peer: '#cbd5e1',
+          initialized: '#64748b',      // Slate gray
+          cluster_peer: '#94a3b8',     // Lighter slate
           beacon_interaction: '#10b981',
           metadata_match: '#8b5cf6'
-        }[d.type] || '#cbd5e1')
-        .attr('stroke-width', d.type === 'initialized' ? 1.5 : 1)
-        .attr('stroke-opacity', d.type === 'cluster_peer' ? 0.3 : 0.6)
+        }[d.type] || '#94a3b8')
+        .attr('stroke-width', d.type === 'initialized' ? 1.2 : 1)
+        .attr('stroke-opacity', d.type === 'cluster_peer' ? 0.4 : 0.7)
         .attr('stroke-dasharray', {
           initialized: 'none',
           cluster_peer: '4,4',
@@ -753,11 +753,11 @@ function initConnectionToggles() {
     <div style="font-size: 10px; color: #64748b; margin-bottom: 6px; text-transform: uppercase;">Connections</div>
     <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; margin-bottom: 4px; cursor: pointer;">
       <input type="checkbox" checked data-conn="initialized" onchange="toggleConnection(this)"> 
-      <span style="width: 8px; height: 8px; background: #475569; border-radius: 50%; display: inline-block;"></span> Initialized
+      <span style="width: 8px; height: 8px; background: #64748b; border-radius: 50%; display: inline-block;"></span> Initialized
     </label>
     <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; margin-bottom: 4px; cursor: pointer;">
       <input type="checkbox" checked data-conn="cluster_peer" onchange="toggleConnection(this)"> 
-      <span style="width: 8px; height: 8px; background: #cbd5e1; border-radius: 50%; display: inline-block;"></span> Cluster Peers
+      <span style="width: 8px; height: 8px; background: #94a3b8; border-radius: 50%; display: inline-block;"></span> Cluster Peers
     </label>
     <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; margin-bottom: 4px; cursor: pointer;">
       <input type="checkbox" data-conn="beacon_interaction" onchange="toggleConnection(this)"> 
