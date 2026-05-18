@@ -71,7 +71,7 @@ def discover_minds_agents(limit: int = 50) -> List[Dict[str, Any]]:
                     "role": item.get("role"),
                     "last_seen": item.get("last_active"),
                     "source": "minds_api",
-                    "verified": False
+                    "verified": False,
                     "metadata": {
                         "minds_verified": item.get("verified", False),
                         "steward_contact": item.get("steward_email"),  # Optional
@@ -118,7 +118,7 @@ def discover_hellominds_agents(limit: int = 100) -> List[Dict[str, Any]]:
                     "role": item.get("role"),
                     "last_seen": item.get("last_active"),
                     "source": "hellominds_api",
-                    "verified": False
+                    "verified": False,
                     "metadata": {k: v for k, v in item.items() if k not in ["id", "name", "role", "last_active"]}
                 })
             
@@ -165,7 +165,7 @@ def discover_blockchain_agents(chain: str = "base", limit: int = 50) -> List[Dic
                         "role": None,
                         "last_seen": datetime.fromtimestamp(event.get("timestamp", 0), tz=timezone.utc).isoformat(),
                         "source": f"blockchain_{chain}",
-                        "verified": False
+                        "verified": False,
                         "metadata": {"tx_hash": event.get("transactionHash"), "block": event.get("blockNumber")}
                     })
             
