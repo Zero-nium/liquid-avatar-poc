@@ -71,6 +71,7 @@ def discover_minds_agents(limit: int = 50) -> List[Dict[str, Any]]:
                     "role": item.get("role"),
                     "last_seen": item.get("last_active"),
                     "source": "minds_api",
+                    "verified": False
                     "metadata": {
                         "minds_verified": item.get("verified", False),
                         "steward_contact": item.get("steward_email"),  # Optional
@@ -117,6 +118,7 @@ def discover_hellominds_agents(limit: int = 100) -> List[Dict[str, Any]]:
                     "role": item.get("role"),
                     "last_seen": item.get("last_active"),
                     "source": "hellominds_api",
+                    "verified": False
                     "metadata": {k: v for k, v in item.items() if k not in ["id", "name", "role", "last_active"]}
                 })
             
@@ -163,6 +165,7 @@ def discover_blockchain_agents(chain: str = "base", limit: int = 50) -> List[Dic
                         "role": None,
                         "last_seen": datetime.fromtimestamp(event.get("timestamp", 0), tz=timezone.utc).isoformat(),
                         "source": f"blockchain_{chain}",
+                        "verified": False
                         "metadata": {"tx_hash": event.get("transactionHash"), "block": event.get("blockNumber")}
                     })
             
@@ -178,22 +181,19 @@ def discover_blockchain_agents(chain: str = "base", limit: int = 50) -> List[Dic
 
 def discover_public_directory(limit: int = 50) -> List[Dict[str, Any]]:
     """
-    Query GitHub for Animoca-related repos/users as a working example.
-    Replace with actual agent registries when available.
+    Query GitHub for actual user accounts (not repos) related to Animoca/Minds.
     """
     agents = []
-    
-    # Real, public GitHub API endpoint (no auth needed for basic queries)
     url = "https://api.github.com/search/users"
     
     for attempt in range(MAX_RETRIES):
         try:
-            # Search for users/orgs related to Animoca/Minds
+            # Explicitly search for USERS only, not repos/orgs
             res = requests.get(
                 url,
                 params={
-                    "q": "animoca OR minds OR ethoswarm in:name,bio",
-                    "per_page": min(limit, 30),  # GitHub API max per page
+                    "q": "animoca OR minds OR ethoswarm in:name,bio type:user",
+                    "per_page": min(limit, 30),
                     "sort": "joined",
                     "order": "desc"
                 },
@@ -207,25 +207,29 @@ def discover_public_directory(limit: int = 50) -> List[Dict[str, Any]]:
             data = res.json()
             
             for user in data.get("items", []):
-                # Generate a deterministic agent_id from GitHub login
+                # Double-check it's actually a User account
+                if user.get("type") != "User":
+                    continue
+                    
                 agent_id = f"github-{user['id']}"
-                
                 agents.append({
                     "id": agent_id,
                     "name": user["login"],
-                    "role": None,  # Will be "general" until enriched
+                    "role": None,
                     "last_seen": user.get("updated_at"),
                     "source": "github_search",
+                    "verified": False,
                     "metadata": {
                         "avatar_url": user.get("avatar_url"),
                         "profile_url": user.get("html_url"),
                         "bio": user.get("bio"),
                         "location": user.get("location"),
-                        "public_repos": user.get("public_repos")
+                        "public_repos": user.get("public_repos"),
+                        "account_type": "github_user"  # Explicit marker
                     }
                 })
             
-            print(f"✅ GitHub: found {len(agents)} potential agents", file=sys.stderr)
+            print(f"✅ GitHub: found {len(agents)} verified user accounts", file=sys.stderr)
             return agents
             
         except requests.exceptions.RequestException as e:
@@ -378,18 +382,20 @@ def format_output(results: Dict[str, Any], json_output: bool, cron_mode: bool) -
         f"📡 Sources: {', '.join(results['sources_queried'])}",
         f"",
     ]
-    
+
     for source, ingestions in results["ingestion"].items():
         if ingestions:
             registered = sum(1 for r in ingestions if r.get("status") == "registered")
+            exists = sum(1 for r in ingestions if r.get("status") == "exists")
             errors = sum(1 for r in ingestions if r.get("status") == "error")
-            lines.append(f"📦 {source}: {registered} registered, {errors} errors")
-    
+            discovered = len(ingestions)
+            lines.append(f"📦 {source}: {discovered} discovered, {registered} registered, {exists} already exist, {errors} errors")
+
     lines.append("")
-    lines.append(f"📊 Summary: {results['summary']['newly_registered']} new agents, "
-                f"{results['summary']['total_discovered']} total discovered, "
-                f"{results['summary']['errors']} errors")
-    
+    lines.append(f"📊 Summary: {results['summary']['newly_registered']} newly registered, "
+            f"{results['summary']['total_discovered']} total discovered, "
+            f"{results['summary']['errors']} errors")
+
     return "\n".join(lines)
 
 def main():
