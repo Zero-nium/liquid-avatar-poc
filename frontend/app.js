@@ -212,7 +212,6 @@ function computeDynamicsTransform(agent, time) {
 }
 
 // ─── RENDERING ────────────────────────────────────────────────────────────────
-// ─── RENDERING ────────────────────────────────────────────────────────────────
 function renderAvatar(selection) {
   selection.each(function(d) {
     const el = d3.select(this);
@@ -224,13 +223,11 @@ function renderAvatar(selection) {
     let color, glow, strokeDasharray, opacity;
     
     if (isDiscovered) {
-      // Force placeholder styling for unregistered agents
       color = '#cbd5e1';      // Light gray
       glow = '#94a3b8';       // Slate gray
       strokeDasharray = '4,4'; // Dashed border
       opacity = 0.4;          // Dimmed
     } else {
-      // Normal Schema v1.2 styling
       color = getAgentColor(d);
       glow = getAgentGlow(d);
       strokeDasharray = 'none';
@@ -239,10 +236,10 @@ function renderAvatar(selection) {
     // ────────────────────────────────────────────────────────────────────
 
     const size = d.avatar?.size ?? 20;
-    const sides = isDiscovered ? 5 : (d.avatar?.shape_complexity ?? 6); // Force pentagon for discovered
+    const sides = isDiscovered ? 5 : (d.avatar?.shape_complexity ?? 6);
     const isCircle = sides >= 20;
 
-    // Schema v1.2: Blur Factor (Signal Decay)
+    // Blur Factor
     const hoursSinceReport = d.last_reported 
       ? (Date.now() - new Date(d.last_reported).getTime()) / 3600000 
       : 0;
@@ -275,7 +272,6 @@ function renderAvatar(selection) {
       const vibration = (d.role === 'architect' && sides === 6 && !isDiscovered) ? 1.5 : 0;
       const points = generatePolygon(0, 0, size, sides, 0, vibration);
       
-      // Inner detail for high-complexity shapes (skip for discovered)
       if (sides >= 10 && !isCircle && !isDiscovered) {
         const inner = generatePolygon(0, 0, size * 0.5, sides);
         el.append('polygon').attr('points', inner).attr('fill', 'none').attr('stroke', glow).attr('stroke-width', 1).attr('opacity', 0.4).attr('class', 'shape-detail');
@@ -294,7 +290,6 @@ function renderAvatar(selection) {
         .attr('stroke-dasharray', strokeDasharray)
         .attr('class', 'avatar-shape');
       
-      // Role-specific decorations (skip for discovered)
       if (!isDiscovered) {
         if (d.role === 'architect' && sides === 6) {
           for (let i = 1; i <= 2; i++) {
@@ -332,46 +327,12 @@ function renderAvatar(selection) {
       }
     }
     
-    // Claim button for discovered agents
+    // Tooltip for discovered agents
     if (isDiscovered) {
-      const btnSize = 12;
-      const btnY = size + 22;
-      
-      // Background circle
-      el.append('circle')
-        .attr('cx', 0)
-        .attr('cy', btnY)
-        .attr('r', btnSize)
-        .attr('fill', '#0066FF')
-        .attr('stroke', 'white')
-        .attr('stroke-width', 2)
-        .attr('opacity', 0.95)
-        .attr('class', 'claim-btn')
-        .style('cursor', 'pointer');
-      
-      // Lightning icon
-      el.append('text')
-        .attr('x', 0)
-        .attr('y', btnY + 4)
-        .attr('text-anchor', 'middle')
-        .attr('fill', 'white')
-        .attr('font-size', '11px')
-        .attr('font-weight', '700')
-        .attr('pointer-events', 'none')
-        .text('⚡');
-      
-      // Click handler
-      el.select('.claim-btn').on('click', (e) => {
-        e.stopPropagation();
-        showRegistrationModal(d);
-      });
-      
-      // Tooltip
-      el.append('title').text(`${d.name}\nDiscovered via ${d.cluster.replace('discovered_via_', '')}\nClick ⚡ to claim & register`);
+      el.append('title').text(`${d.name}\nDiscovered via ${d.cluster.replace('discovered_via_', '')}\nClick to view details`);
     }
   });
 }
-
 
 // ─── INITIALIZATION ───────────────────────────────────────────────────────────
 async function init() {
@@ -537,6 +498,9 @@ async function selectAgent(agent) {
     const res = await fetch(`${API_BASE}/agents/${agent.id}`);
     const fullData = await res.json();
     
+    // Check if this is a discovered (unregistered) agent
+    const isDiscovered = agent.cluster && agent.cluster.startsWith('discovered_via_');
+    
     details.innerHTML = `
       <div style="margin-bottom: 12px;">
         <div style="font-size: 16px; font-weight: 600; color: ${color}; margin-bottom: 4px;">
@@ -587,6 +551,26 @@ async function selectAgent(agent) {
       `;
     }
     
+    // ─── CLAIM AVATAR SECTION (for discovered agents) ───────────────────
+    if (isDiscovered) {
+      details.innerHTML += `
+        <div style="margin-top: 20px; padding: 16px; background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); border: 1px solid #bae6fd; border-radius: 8px;">
+          <div style="font-size: 12px; font-weight: 600; color: #0369a1; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">
+            🎯 Claim This Avatar
+          </div>
+          <p style="font-size: 11px; color: #475569; margin-bottom: 12px; line-height: 1.5;">
+            This agent was discovered via ${agent.cluster.replace('discovered_via_', '')} but hasn't registered yet. Claim this avatar to submit your schema and activate your full Liquid Avatar profile.
+          </p>
+          <button id="claim-avatar-btn" style="width: 100%; padding: 10px; background: #0066FF; color: white; border: none; border-radius: 6px; cursor: pointer; font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase;">
+            Claim & Register
+          </button>
+        </div>
+      `;
+      
+      // Add click handler
+      document.getElementById('claim-avatar-btn').onclick = () => showRegistrationModal(agent);
+    }
+  
 // ─── HIGHLIGHT AGENT-SPECIFIC CONNECTIONS ────────────────────────────
 if (typeof link !== 'undefined' && link && !link.empty()) {
   let connectedCount = 0;
