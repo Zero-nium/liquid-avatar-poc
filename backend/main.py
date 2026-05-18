@@ -1247,15 +1247,20 @@ async def get_swarm_map():
     
     # 1. Initialization relationships (from agent_connections table)
     try:
-    init_edges = await run_query(conn, """
-        SELECT source_id, target_id FROM agent_connections 
-        WHERE connection_type = 'initialized'
-    """, fetch="all")
-    for e in init_edges:
-        if e["source_id"] in agent_ids and e["target_id"] in agent_ids:
-            edges.append({"source": e["source_id"], "target": e["target_id"], "type": "initialized"})
+        init_edges = await run_query(conn, """
+            SELECT source_id, target_id FROM agent_connections 
+            WHERE connection_type = 'initialized'
+        """, fetch="all")
+
+        for e in init_edges:
+            if e["source_id"] in agent_ids and e["target_id"] in agent_ids:
+                edges.append({
+                        "source": e["source_id"], 
+                        "target": e["target_id"], 
+                        "type": "initialized"
+                    })
     except Exception as ex:
-        logger.warning(f"Could not fetch initialized edges: {ex}")            
+            logger.warning(f"Could not fetch initialized edges: {ex}")            
     
     # 2. Cluster peer connections (auto-generated for visualization)
     cluster_groups = {}
@@ -1283,7 +1288,13 @@ async def get_swarm_map():
                 })
 
     await conn.close()
-    return {"nodes": nodes, "edges": edges, "node_count": len(nodes), "edge_count": len(edges)}
+    
+    return {
+        "nodes": nodes, 
+        "edges": edges, 
+        "node_count": len(nodes), 
+        "edge_count": len(edges)
+    }
     
 @app.post("/seed/mock-swarm")
 async def seed_mock_swarm():
