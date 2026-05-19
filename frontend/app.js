@@ -331,6 +331,21 @@ function renderAvatar(selection) {
     if (isDiscovered) {
       el.append('title').text(`${d.name}\nDiscovered via ${d.cluster.replace('discovered_via_', '')}\nClick to view details`);
     }
+
+    // In renderAvatar(), after drawing main shape:
+    if (d.cluster === 'discovered_via_ethoswarm') {
+      // Subtle pulse ring for blockchain-active agents
+      el.append('circle')
+        .attr('r', size * 1.3)
+        .attr('fill', 'none')
+        .attr('stroke', '#a78bfa')  // Purple accent
+        .attr('stroke-width', 1)
+        .attr('opacity', 0.3)
+        .attr('class', 'ethoswarm-pulse')
+        .attr('stroke-dasharray', '2,4');
+      // Tooltip
+      el.append('title').text(`${d.name}\nEthoswarm Agent\nOn-chain: ${d.metadata?.on_chain_id?.slice(0,10)}...`);
+    }
   });
 }
 
