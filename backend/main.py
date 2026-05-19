@@ -1242,7 +1242,7 @@ async def get_swarm_map():
         })
         agent_ids.add(row["agent_id"])
 
-    # ─── BUILD CONNECTION EDGES ──────────────────────────────────────────
+   # ─── BUILD CONNECTION EDGES ──────────────────────────────────────────
     edges = []
     
     # 1. Initialization relationships (from agent_connections table)
@@ -1251,16 +1251,12 @@ async def get_swarm_map():
             SELECT source_id, target_id FROM agent_connections 
             WHERE connection_type = 'initialized'
         """, fetch="all")
-
+        
         for e in init_edges:
             if e["source_id"] in agent_ids and e["target_id"] in agent_ids:
-                edges.append({
-                        "source": e["source_id"], 
-                        "target": e["target_id"], 
-                        "type": "initialized"
-                    })
+                edges.append({"source": e["source_id"], "target": e["target_id"], "type": "initialized"})
     except Exception as ex:
-            logger.warning(f"Could not fetch initialized edges: {ex}")            
+        logger.warning(f"Could not fetch initialized edges: {ex}")
     
     # 2. Cluster peer connections (auto-generated for visualization)
     cluster_groups = {}
@@ -1269,32 +1265,20 @@ async def get_swarm_map():
             cluster_groups.setdefault(n["cluster"], []).append(n["id"])
     
     for cluster, members in cluster_groups.items():
-        if any(m.startswith('github-') for m in members):
-            continue # Don't connect GitHub-discovered agents
-
+        # ─── SKIP AUTO-CONNECTIONS FOR DISCOVERED AGENTS ────────────────
+        # This prevents Ethoswarm/GitHub agents from forming starbursts
+        if cluster.startswith('discovered_via_'):
+            continue  
+        # ────────────────────────────────────────────────────────────────
+        
         if len(members) > 1:
             # Connect each member to the first member of the cluster (star topology)
             center = members[0]
             for member in members[1:]:
-                edges.append({
-                    "source": center, 
-                    "target": member, 
-                    "type": "cluster_peer"
-                    })
-        if cluster.startswith('discovered_via'):
-            continue # Don't connect unregistered agents automatically
-
-        if len(members) > 1:
-            # Connect each member to the first member of the cluster (star topology)
-            center = members[0]
-            for member in members[1:]:
-                edges.append({
-                    "source": center, 
-                    "target": member, 
-                    "type": "cluster_peer"
-                })
-
+                edges.append({"source": center, "target": member, "type": "cluster_peer"})
+    
     await conn.close()
+    return {"nodes": nodes, "edges": edges, "node_count": len(nodes), "edge_count": len(edges)}
     
     return {
         "nodes": nodes, 
