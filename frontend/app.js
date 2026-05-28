@@ -16,6 +16,25 @@ let showLabels = false;
 let animationFrame;
 let showConnections = true;
 
+// ─── ANIME MODE STATE ──────────────────────────────────────────────────────
+let animeMode = localStorage.getItem('liquid_anime_mode') === 'true';
+
+function toggleAnimeMode() {
+  animeMode = !animeMode;
+  localStorage.setItem('liquid_anime_mode', animeMode);
+  node.call(animeMode ? renderAnimeAvatar : renderAvatar);
+  updateAnimeToggleUI();
+}
+
+function updateAnimeToggleUI() {
+  const btn = document.getElementById('anime-toggle');
+  if (btn) {
+    btn.style.background = animeMode ? 'var(--accent)' : 'transparent';
+    btn.style.color = animeMode ? 'white' : 'var(--text-primary)';
+    btn.style.borderColor = animeMode ? 'var(--accent)' : 'var(--border)';
+  }
+}
+
 // ─── CONNECTION FILTERS ──────────────────────────────────────────────────────
 const connectionFilters = {
   initialized: true,
@@ -808,6 +827,150 @@ function toggleConnection(checkbox) {
   link.attr('display', d => connectionFilters[d.type || 'cluster_peer'] ? 'inline' : 'none');
 }
 
+// ─── ANIME MODE RENDERER ────────────────────────────────────────────────────
+function renderAnimeAvatar(selection) {
+  selection.each(function(d) {
+    const el = d3.select(this);
+    el.selectAll('*').remove();
+
+    const schema = d.avatar || {};
+    const hue = schema.base_hue ?? 180;
+    const sat = Math.round((schema.saturation ?? 0.75) * 100);
+    const complexity = schema.shape_complexity ?? 5;
+    const pulse = schema.pulse_rate ?? 2.0;
+    const dynamics = d.avatar?.dynamics_state || 'idle';
+    const role = d.role || 'general';
+    const size = schema.size ?? 28;
+    const isDiscovered = d.cluster?.startsWith('discovered_via_');
+
+    // Preserve placeholder styling for unregistered agents
+    if (isDiscovered) {
+      renderAvatar(d3.select(this));
+      return;
+    }
+
+    const features = mapSchemaToAnime(hue, sat, complexity, dynamics, role, pulse);
+    const g = el.append('g').attr('class', 'anime-avatar').attr('transform', `scale(${size/30})`);
+
+    drawAnimeHair(g, features);
+    drawAnimeFace(g, features);
+    drawAnimeEyes(g, features);
+    drawAnimeMouth(g, features);
+    drawAnimeBlush(g, features);
+    attachAnimeAnimations(el, features, pulse);
+  });
+}
+
+function mapSchemaToAnime(hue, sat, complexity, dynamics, role, pulse) {
+  const eyeColor = `hsl(${hue}, ${sat}%, 45%)`;
+  const hairBase = `hsl(${hue}, ${sat * 0.65}%, 35%)`;
+  const hairAccent = `hsl(${hue}, ${sat}%, 60%)`;
+  const skinTone = `hsl(${(hue + 160) % 360}, 12%, 90%)`;
+  const blushColor = `hsl(${(hue + 25) % 360}, ${sat}%, 70%)`;
+
+  const exprMap = {
+    idle: { eyeOpen: 0.85, pupil: 0.6, brow: 0, mouth: 'soft_smile', blinkRate: 3.5 },
+    input: { eyeOpen: 1.0, pupil: 0.75, brow: -3, mouth: 'slight_open', blinkRate: 4.0 },
+    output: { eyeOpen: 0.95, pupil: 0.65, brow: 2, mouth: 'confident_smile', blinkRate: 3.0 },
+    analysis: { eyeOpen: 0.6, pupil: 0.45, brow: -8, mouth: 'neutral', blinkRate: 2.5 },
+    verification: { eyeOpen: 0.8, pupil: 0.55, brow: 5, mouth: 'firm', blinkRate: 3.2 }
+  };
+  const expr = exprMap[dynamics] || exprMap.idle;
+
+  let hairStyle = 'medium';
+  if (complexity <= 4) hairStyle = 'short';
+  else if (complexity <= 6) hairStyle = 'bob';
+  else if (complexity <= 8) hairStyle = 'twin_tails';
+  else if (complexity <= 10) hairStyle = 'long_wavy';
+  else hairStyle = 'elaborate';
+
+  const roleTweaks = {
+    conductor: { brow: expr.brow + 1, mouth: 'balanced' },
+    architect: { brow: expr.brow - 2, hairStyle: 'angular_' + hairStyle },
+    optimizer: { brow: expr.brow, mouth: 'efficient_smile' },
+    auditor: { brow: expr.brow + 3, mouth: 'serious' },
+    chronicler: { brow: expr.brow - 1, mouth: 'wise_smile' }
+  };
+  const tweak = roleTweaks[role] || {};
+
+  return {
+    colors: { eye: eyeColor, hairBase, hairAccent, skin: skinTone, blush: blushColor },
+    expression: { ...expr, ...tweak },
+    hairStyle: tweak.hairStyle || hairStyle,
+    pulse
+  };
+}
+
+function drawAnimeFace(g, f) {
+  g.append('path')
+    .attr('d', 'M -12,-5 C -12,12 0,15 12,12 C 15,0 12,-8 0,-10 C -12,-8 -15,0 -12,-5 Z')
+    .attr('fill', f.colors.skin)
+    .attr('class', 'anime-face-base')
+    .attr('stroke', 'rgba(0,0,0,0.04)')
+    .attr('stroke-width', 0.5);
+}
+
+function drawAnimeEyes(g, f) {
+  const { eyeOpen, pupil, brow } = f.expression;
+  const eyeY = -2 + (brow * 0.2);
+  const eyeGroup = g.append('g').attr('class', 'anime-eyes');
+  
+  // Left Eye
+  eyeGroup.append('path').attr('d', `M -9,${eyeY} Q -9,${eyeY + 5 * eyeOpen} -6,${eyeY + 6 * eyeOpen} Q -3,${eyeY + 5 * eyeOpen} -3,${eyeY}`)
+    .attr('fill', 'none').attr('stroke', '#111').attr('stroke-width', 1.2).attr('stroke-linecap', 'round');
+  eyeGroup.append('circle').attr('cx', -6).attr('cy', eyeY + 3).attr('r', 2.5 * pupil).attr('fill', f.colors.eye);
+  eyeGroup.append('circle').attr('cx', -5).attr('cy', eyeY + 2).attr('r', 0.9).attr('fill', 'white');
+
+  // Right Eye
+  eyeGroup.append('path').attr('d', `M 3,${eyeY} Q 3,${eyeY + 5 * eyeOpen} 6,${eyeY + 6 * eyeOpen} Q 9,${eyeY + 5 * eyeOpen} 9,${eyeY}`)
+    .attr('fill', 'none').attr('stroke', '#111').attr('stroke-width', 1.2).attr('stroke-linecap', 'round');
+  eyeGroup.append('circle').attr('cx', 6).attr('cy', eyeY + 3).attr('r', 2.5 * pupil).attr('fill', f.colors.eye);
+  eyeGroup.append('circle').attr('cx', 7).attr('cy', eyeY + 2).attr('r', 0.9).attr('fill', 'white');
+
+  // Brows
+  eyeGroup.append('path').attr('d', `M -10,${eyeY - 4} Q -6,${eyeY - 5 + brow} -3,${eyeY - 4}`).attr('fill', 'none').attr('stroke', '#333').attr('stroke-width', 0.8).attr('stroke-linecap', 'round');
+  eyeGroup.append('path').attr('d', `M 3,${eyeY - 4} Q 6,${eyeY - 5 + brow} 10,${eyeY - 4}`).attr('fill', 'none').attr('stroke', '#333').attr('stroke-width', 0.8).attr('stroke-linecap', 'round');
+}
+
+function drawAnimeMouth(g, f) {
+  const mouths = {
+    soft_smile: 'M -3,8 Q 0,11 3,8', slight_open: 'M -2,8 Q 0,12 2,8',
+    confident_smile: 'M -4,7 Q 0,12 4,7', neutral: 'M -2,9 L 2,9',
+    firm: 'M -3,9 Q 0,10 3,9', wise_smile: 'M -3,8 Q 0,10 3,8',
+    balanced: 'M -3,8 Q 0,11 3,8', efficient_smile: 'M -3,8.5 Q 0,10 3,8.5', serious: 'M -2,9 L 2,9'
+  };
+  g.append('path').attr('d', mouths[f.expression.mouth] || mouths.soft_smile)
+    .attr('fill', 'none').attr('stroke', '#444').attr('stroke-width', 1).attr('stroke-linecap', 'round');
+}
+
+function drawAnimeBlush(g, f) {
+  g.append('ellipse').attr('cx', -9).attr('cy', 3).attr('rx', 2.5).attr('ry', 1.2).attr('fill', f.colors.blush).attr('opacity', 0.35);
+  g.append('ellipse').attr('cx', 9).attr('cy', 3).attr('rx', 2.5).attr('ry', 1.2).attr('fill', f.colors.blush).attr('opacity', 0.35);
+}
+
+function drawAnimeHair(g, f) {
+  const { hairStyle, colors } = f;
+  let path = 'M -14,-8 C -18,-15 -15,-25 0,-28 C 15,-25 18,-15 14,-8 Z';
+  
+  if (hairStyle.includes('twin')) {
+    path += 'M -12,-10 Q -18,0 -14,12 Q -12,5 -10,-5 Z M 12,-10 Q 18,0 14,12 Q 12,5 10,-5 Z';
+  } else if (hairStyle.includes('long')) {
+    path += 'M -14,-8 C -20,5 -18,15 -15,18 C -12,15 -10,0 -12,-8 Z M 14,-8 C 20,5 18,15 15,18 C 12,15 10,0 12,-8 Z';
+  } else if (hairStyle.includes('short') || hairStyle.includes('bob')) {
+    path += 'M -14,-8 C -16,-5 -14,0 -12,-2 C -14,-8 -15,-10 -14,-8 Z M 14,-8 C 16,-5 14,0 12,-2 C 14,-8 15,-10 14,-8 Z';
+  }
+
+  g.append('path').attr('d', path).attr('fill', colors.hairBase).attr('class', 'anime-hair-strand').attr('stroke', 'rgba(0,0,0,0.08)').attr('stroke-width', 0.5);
+  g.append('path').attr('d', 'M -10,-20 Q -8,-15 -6,-10').attr('fill', 'none').attr('stroke', colors.hairAccent).attr('stroke-width', 1.5).attr('stroke-linecap', 'round');
+  g.append('path').attr('d', 'M 10,-20 Q 8,-15 6,-10').attr('fill', 'none').attr('stroke', colors.hairAccent).attr('stroke-width', 1.5).attr('stroke-linecap', 'round');
+}
+
+function attachAnimeAnimations(el, features, pulse) {
+  el.style('--breath-dur', `${3000 / pulse}ms`);
+  el.style('--blink-dur', `${features.expression.blinkRate * 1000 / pulse}ms`);
+  el.style('--sway-dur', `${2000 / pulse}ms`);
+}
+
 // ─── CONTROLS ─────────────────────────────────────────────────────────────────
 function resetZoom() {
   svg.transition().duration(750).call(
@@ -818,7 +981,7 @@ function resetZoom() {
 
 function toggleLabels() {
   showLabels = !showLabels;
-  node.call(renderAvatar);
+  node.call(animeMode ? renderAnimeAvatar : renderAvatar);
 }
 
 // ─── DRAG ─────────────────────────────────────────────────────────────────────

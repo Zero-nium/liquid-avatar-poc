@@ -287,6 +287,16 @@
 
     .footer-link:hover { color: var(--accent); }
 
+    /* ─── ANIME MODE ANIMATIONS ─────────────────────────────────────────────── */
+    .anime-face-base { animation: anime-breathe var(--breath-dur, 3s) ease-in-out infinite; transform-origin: center; }
+    @keyframes anime-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.015); } }
+
+    .anime-eyes { animation: anime-blink var(--blink-dur, 3.5s) infinite; transform-origin: center; }
+    @keyframes anime-blink { 0%, 90%, 100% { transform: scaleY(1); } 94% { transform: scaleY(0.15); } }
+
+    .anime-hair-strand { animation: anime-sway var(--sway-dur, 2s) ease-in-out infinite; transform-origin: top center; }
+    @keyframes anime-sway { 0%, 100% { transform: rotate(-2deg); } 50% { transform: rotate(2deg); } }  
+
     @media (max-width: 1200px) {
       main { grid-template-columns: 1fr; }
       .sidebar { display: none; }
@@ -307,6 +317,7 @@
       <button class="btn" onclick="toggleLabels()">Labels</button>
       <button class="btn" onclick="resetZoom()">Reset</button>
       <button class="btn btn-primary" onclick="refreshData()">Refresh</button>
+      <button class="btn" id="anime-toggle" onclick="toggleAnimeMode()"> Anime</button>
     </div>
   </header>
 
