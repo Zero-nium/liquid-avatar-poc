@@ -7,7 +7,6 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@600;700&display=swap" rel="stylesheet">
   <script src="https://d3js.org/d3.v7.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
   <style>
     :root {
       --bg-primary: #FFFFFF;
@@ -227,10 +226,24 @@
       overflow: hidden;
     }
 
+    #swarm-svg {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none; /* Let clicks pass to canvas */
+    }
+
     #swarm-canvas {
       display: block;
       width: 100%;
       height: 100%;
+      cursor: grab;
+    }
+    
+    #swarm-canvas:active {
+      cursor: grabbing;
     }
 
     #tooltip {
@@ -267,6 +280,7 @@
       color: var(--text-secondary);
       text-transform: uppercase;
       letter-spacing: 1px;
+      z-index: 10;
     }
 
     footer {
@@ -288,16 +302,6 @@
 
     .footer-link:hover { color: var(--accent); }
 
-    /* ─── ANIME MODE ANIMATIONS ─────────────────────────────────────────────── */
-    .anime-face-base { animation: anime-breathe var(--breath-dur, 3s) ease-in-out infinite; transform-origin: center; }
-    @keyframes anime-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.015); } }
-
-    .anime-eyes { animation: anime-blink var(--blink-dur, 3.5s) infinite; transform-origin: center; }
-    @keyframes anime-blink { 0%, 90%, 100% { transform: scaleY(1); } 94% { transform: scaleY(0.15); } }
-
-    .anime-hair-strand { animation: anime-sway var(--sway-dur, 2s) ease-in-out infinite; transform-origin: top center; }
-    @keyframes anime-sway { 0%, 100% { transform: rotate(-2deg); } 50% { transform: rotate(2deg); } }  
-
     @media (max-width: 1200px) {
       main { grid-template-columns: 1fr; }
       .sidebar { display: none; }
@@ -315,10 +319,10 @@
       SWARM VISUALIZATION v1.2
     </div>
     <div class="header-actions">
+      <button class="btn" id="anime-toggle" onclick="toggleAnimeMode()">Anime</button>
       <button class="btn" onclick="toggleLabels()">Labels</button>
       <button class="btn" onclick="resetZoom()">Reset</button>
       <button class="btn btn-primary" onclick="refreshData()">Refresh</button>
-      <button class="btn" id="anime-toggle" onclick="toggleAnimeMode()"> Anime</button>
     </div>
   </header>
 
@@ -357,7 +361,6 @@
         <div id="dynamics-legend"></div>
       </div>
 
-      <!-- NEW: Connection Toggles -->
       <div>
         <div class="sidebar-title">Connections</div>
         <div id="connection-toggles" style="display: flex; flex-direction: column; gap: 8px;">
@@ -380,9 +383,10 @@
       </div>
     </aside>
 
-    <!-- Center: Canvas -->
+    <!-- Center: Canvas + SVG Overlay -->
     <section id="canvas-container">
-      <svg id="swarm-canvas"></svg>
+      <canvas id="swarm-canvas"></canvas>
+      <svg id="swarm-svg"></svg>
       <div id="loading">Initializing swarm...</div>
     </section>
 
