@@ -1,25 +1,26 @@
 /**
 Liquid Avatar — Swarm Visualization Engine v1.2
-Hybrid Rendering: D3.js Physics + Canvas 2D (High Quality) + SVG Links
+Hybrid Rendering: D3.js Physics + Canvas 2D (High Quality Anime) + SVG (Geometric)
 */
 const API_BASE = window.location.origin.includes('localhost')
   ? 'http://localhost:8000'
   : window.location.origin;
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
-let simulation, svg, g, link;
+let simulation, svg, g, link, node;
 let agentsData = { nodes: [], edges: [] };
 let ontologyData = null;
 let selectedAgent = null;
 let showLabels = false;
+let animationFrame;
 let showConnections = true;
 
-// ─── CANVAS ENGINE STATE ────────────────────────────────────────────────────
-let canvas, ctx, width, height;
-let useAnimeMode = localStorage.getItem('liquid_anime_mode') === 'true';
-const avatarCache = new Map(); // Texture cache for performance
+// ─── RENDER MODE STATE ───────────────────────────────────────────────────────
+let useAnimeMode = false; // DEFAULT TO FALSE (geometric SVG)
+let canvas, ctx;
+const avatarCache = new Map();
 const offscreenCanvas = document.createElement('canvas');
-const offCtx = offscreenCanvas.getContext('2d', { willReadFrequently: false });
+const offCtx = offscreenCanvas.getContext('2d');
 
 // ─── CONNECTION FILTERS ──────────────────────────────────────────────────────
 const connectionFilters = {
@@ -49,19 +50,18 @@ function connectSwarmWebSocket() {
   };
 
   swarmSocket.onclose = () => {
-    console.log(' WebSocket disconnected. Reconnecting in 5s...');
+    console.log('🔌 WebSocket disconnected. Reconnecting in 5s...');
     setTimeout(connectSwarmWebSocket, 5000);
   };
 
   swarmSocket.onerror = (err) => console.error('WebSocket error:', err);
 }
 
-// ─── SWARM UPDATE HANDLER ─────────────────────────────────────────────
+// ─── SWARM UPDATE HANDLER ──────────────────────────────────────────────
 function handleSwarmUpdate(msg) {
   switch (msg.type) {
     case 'beacon_update':
-      // Clear cache for updated agent to force redraw
-      avatarCache.delete(msg.data.agent_id);
+      handleBeaconUpdate(msg.data);
       break;
     case 'agent_updated':
     case 'agent_registered':
@@ -72,17 +72,51 @@ function handleSwarmUpdate(msg) {
   }
 }
 
+function handleBeaconUpdate(data) {
+  const agentId = data.agent_id;
+  avatarCache.delete(agentId); // Clear cache for updated agent
+  
+  if (!useAnimeMode) {
+    const nodeSelection = svg.selectAll('.agent-node').filter(d => d.id === agentId);
+    if (!nodeSelection.empty()) {
+      const agentData = nodeSelection.data()[0];
+      agentData.last_beacon = data.timestamp;
+      renderAvatar(nodeSelection);
+    }
+  }
+}
+
 // ─── DATA LOADING ────────────────────────────────────────────────────────────
 async function loadSwarmData() {
   try {
     const res = await fetch(`${API_BASE}/swarm/map`);
-    agentsData = await res.json();
-    avatarCache.clear(); // Clear cache on data load
+    const newData = await res.json();
+    
+    agentsData = newData;
+    avatarCache.clear();
     
     if (simulation) {
       simulation.nodes(agentsData.nodes);
       simulation.force('link').links(agentsData.edges);
       simulation.alpha(1).restart();
+
+      if (useAnimeMode) {
+        // Canvas mode - just restart animation loop
+      } else {
+        // SVG mode - re-render nodes
+        node = node.data(agentsData.nodes, d => d.id).join('g')
+          .attr('class', 'agent-node')
+          .call(renderAvatar)
+          .call(d3.drag()
+            .on('start', dragstarted)
+            .on('drag', dragged)
+            .on('end', dragended));
+
+        node.on('click', (e, d) => selectAgent(d))
+          .on('mouseover', (e, d) => showTooltip(e, d))
+          .on('mouseout', hideTooltip);
+      }
+
       updateStats();
     }
   } catch (err) {
@@ -102,273 +136,505 @@ function hslToHex(h, s, l) {
   return `#${f(0)}${f(8)}${f(4)}`;
 }
 
-// ─── CANVAS TEXTURE GENERATION (The "vTuber" Quality Engine) ────────────────
-function generateAvatarTexture(agent, size) {
-  const cacheKey = `${agent.id}-${agent.avatar?.base_hue}-${agent.avatar?.dynamics_state}-${agent.avatar?.shape_complexity}`;
+function getAgentColor(agent) {
+  const hue = agent.avatar?.base_hue ?? 180;
+  const sat = Math.round((agent.avatar?.saturation ?? 0.8) * 100);
+  return hslToHex(hue, sat, 55);
+}
+
+function getAgentGlow(agent) {
+  const hue = agent.avatar?.base_hue ?? 180;
+  const sat = Math.round((agent.avatar?.saturation ?? 0.8) * 100);
+  return hslToHex(hue, sat, 70);
+}
+
+// ─── GEOMETRY GENERATORS ──────────────────────────────────────────────────────
+function generatePolygon(cx, cy, r, sides, rotation = 0, vibration = 0) {
+  const points = [];
+  for (let i = 0; i < sides; i++) {
+    const angle = (i * 2 * Math.PI / sides) + rotation - Math.PI / 2;
+    const vibOffset = vibration * Math.sin(Date.now() * 0.005 + i);
+    points.push([cx + (r + vibOffset) * Math.cos(angle), cy + (r + vibOffset) * Math.sin(angle)]);
+  }
+  return points.map(p => p.join(',')).join(' ');
+}
+
+// ─── DYNAMICS ─────────────────────────────────────────────────────────────────
+const dynamicsState = new Map();
+
+function initDynamics(agentId) {
+  if (!dynamicsState.has(agentId)) {
+    dynamicsState.set(agentId, {
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.02 + Math.random() * 0.02,
+      offset: Math.random() * 100
+    });
+  }
+}
+
+function computeDynamicsTransform(agent, time) {
+  const state = dynamicsState.get(agent.id);
+  if (!state) return { scale: 1, rotation: 0, opacity: 1 };
+  
+  const dynamics = agent.avatar?.dynamics_state || 'idle';
+  let scale = 1, rotation = 0, opacity = 1;
+
+  switch (dynamics) {
+    case 'idle':
+      if (agent.role === 'chronicler' || agent.role === 'chronicle') {
+        opacity = 0.85;
+      } else {
+        opacity = 0.4 + 0.2 * Math.sin(state.phase + time * state.speed);
+      }
+      break;
+    case 'input':
+      scale = 0.92 + 0.08 * Math.sin(state.phase + time * state.speed * 2);
+      break;
+    case 'output':
+      scale = 1.0 + 0.12 * Math.sin(state.phase + time * state.speed * 2);
+      break;
+    case 'analysis':
+      rotation = (time * state.speed * 30) % 360;
+      break;
+    case 'verification':
+      rotation = 5 * Math.sin(state.phase + time * state.speed * 3);
+      break;
+  }
+
+  return { scale, rotation, opacity };
+}
+
+// ─── HIGH-QUALITY ANIME FACE RENDERING (Canvas 2D) ───────────────────────────
+function generateAnimeTexture(agent, size) {
+  const cacheKey = `${agent.id}-anime-${agent.avatar?.base_hue}-${agent.avatar?.dynamics_state}`;
   
   if (avatarCache.has(cacheKey)) {
     return avatarCache.get(cacheKey);
   }
 
-  // Offscreen rendering
-  const w = size * 3; // High res for crispness
-  const h = size * 3;
+  const w = size * 4;
+  const h = size * 4;
   offscreenCanvas.width = w;
   offscreenCanvas.height = h;
   offCtx.clearRect(0, 0, w, h);
 
-  const isDiscovered = agent.cluster?.startsWith('discovered_via_');
   const hue = agent.avatar?.base_hue ?? 180;
   const sat = agent.avatar?.saturation ?? 0.75;
   const complexity = agent.avatar?.shape_complexity ?? 5;
   const dynamics = agent.avatar?.dynamics_state || 'idle';
-  const role = agent.role || 'general';
-
+  
   const cx = w / 2;
   const cy = h / 2;
-  const r = size * 1.2;
+  const r = size * 1.5;
 
-  if (isDiscovered) {
-    // Discovered: Dimmed Pentagon
-    offCtx.save();
-    offCtx.translate(cx, cy);
-    offCtx.fillStyle = '#cbd5e1';
-    offCtx.strokeStyle = '#94a3b8';
-    offCtx.lineWidth = 3;
-    offCtx.setLineDash([6, 6]);
-    offCtx.globalAlpha = 0.6;
-    
+  // 1. Soft glow/aura
+  const glowGrad = offCtx.createRadialGradient(cx, cy, r * 0.5, cx, cy, r * 2.5);
+  glowGrad.addColorStop(0, `hsla(${hue}, ${sat*100}%, 60%, 0.3)`);
+  glowGrad.addColorStop(1, 'transparent');
+  offCtx.fillStyle = glowGrad;
+  offCtx.beginPath();
+  offCtx.arc(cx, cy, r * 2.5, 0, Math.PI * 2);
+  offCtx.fill();
+
+  // 2. Face base with soft skin gradient
+  offCtx.save();
+  offCtx.translate(cx, cy);
+  
+  const skinGrad = offCtx.createRadialGradient(-r*0.3, -r*0.3, 0, 0, 0, r);
+  skinGrad.addColorStop(0, '#FFE8D6');
+  skinGrad.addColorStop(0.5, '#FFD4C0');
+  skinGrad.addColorStop(1, '#F0C0B0');
+  offCtx.fillStyle = skinGrad;
+  
+  // Anime face shape (soft chin)
+  offCtx.beginPath();
+  offCtx.moveTo(-r * 0.6, -r * 0.2);
+  offCtx.bezierCurveTo(-r * 0.7, r * 0.3, -r * 0.4, r * 0.85, 0, r * 0.9);
+  offCtx.bezierCurveTo(r * 0.4, r * 0.85, r * 0.7, r * 0.3, r * 0.6, -r * 0.2);
+  offCtx.arc(0, -r * 0.3, r * 0.65, Math.PI, 0, true);
+  offCtx.closePath();
+  offCtx.fill();
+  offCtx.restore();
+
+  // 3. Hair (complexity-based styling)
+  const hairColor = `hsl(${hue}, ${sat*70}%, 35%)`;
+  const hairShadow = `hsl(${hue}, ${sat*60}%, 25%)`;
+  const hairHighlight = `hsl(${hue}, ${sat*50}%, 50%)`;
+  
+  offCtx.save();
+  offCtx.translate(cx, cy);
+  offCtx.fillStyle = hairColor;
+  
+  // Hair back layer
+  offCtx.beginPath();
+  offCtx.arc(0, -r * 0.4, r * 1.2, Math.PI, 0, true);
+  if (complexity > 7) {
+    // Long hair
+    offCtx.lineTo(r * 0.9, r * 1.2);
+    offCtx.quadraticCurveTo(0, r * 1.5, -r * 0.9, r * 1.2);
+  } else {
+    offCtx.lineTo(r * 0.7, r * 0.5);
+    offCtx.quadraticCurveTo(0, r * 0.8, -r * 0.7, r * 0.5);
+  }
+  offCtx.closePath();
+  offCtx.fill();
+  
+  // Hair shadow
+  offCtx.fillStyle = hairShadow;
+  offCtx.beginPath();
+  offCtx.arc(0, -r * 0.4, r * 1.1, Math.PI, 0, true);
+  offCtx.fill();
+  
+  // Bangs/fringe
+  offCtx.fillStyle = hairColor;
+  offCtx.beginPath();
+  offCtx.moveTo(-r * 0.65, -r * 0.3);
+  offCtx.quadraticCurveTo(-r * 0.3, -r * 0.1, 0, -r * 0.2);
+  offCtx.quadraticCurveTo(r * 0.3, -r * 0.1, r * 0.65, -r * 0.3);
+  offCtx.quadraticCurveTo(r * 0.4, r * 0.3, r * 0.2, r * 0.1);
+  offCtx.quadraticCurveTo(0, r * 0.4, -r * 0.2, r * 0.1);
+  offCtx.quadraticCurveTo(-r * 0.4, r * 0.3, -r * 0.65, -r * 0.3);
+  offCtx.closePath();
+  offCtx.fill();
+  
+  // Hair shine/streaks
+  offCtx.fillStyle = hairHighlight;
+  offCtx.globalAlpha = 0.6;
+  offCtx.beginPath();
+  offCtx.ellipse(-r * 0.3, -r * 0.7, r * 0.35, r * 0.1, -0.3, 0, Math.PI * 2);
+  offCtx.fill();
+  offCtx.globalAlpha = 1.0;
+  
+  // Side hair/tails based on complexity
+  if (complexity <= 4) {
+    // Short hair - minimal
+  } else if (complexity <= 7) {
+    // Twin tails
+    offCtx.fillStyle = hairColor;
+    // Left tail
     offCtx.beginPath();
-    for (let i = 0; i < 5; i++) {
-      const angle = (i * 2 * Math.PI / 5) - Math.PI / 2;
-      offCtx.lineTo(r * Math.cos(angle), r * Math.sin(angle));
-    }
+    offCtx.arc(-r * 0.85, r * 0.3, r * 0.35, 0, Math.PI * 2);
+    offCtx.fill();
+    // Right tail
+    offCtx.beginPath();
+    offCtx.arc(r * 0.85, r * 0.3, r * 0.35, 0, Math.PI * 2);
+    offCtx.fill();
+    
+    // Ribbons
+    offCtx.fillStyle = `hsl(${(hue + 180) % 360}, ${sat*80}%, 45%)`;
+    offCtx.beginPath();
+    offCtx.moveTo(-r * 0.9, r * 0.1);
+    offCtx.lineTo(-r * 1.2, r * 0.3);
+    offCtx.lineTo(-r * 0.95, r * 0.5);
+    offCtx.lineTo(-r * 0.8, r * 0.3);
     offCtx.closePath();
     offCtx.fill();
-    offCtx.stroke();
-    offCtx.restore();
-  } else {
-    // Registered: High-Quality Anime Face
     
-    // 1. Glow / Aura
-    const glowGrad = offCtx.createRadialGradient(cx, cy, r * 0.5, cx, cy, r * 2.5);
-    glowGrad.addColorStop(0, `hsla(${hue}, ${sat*100}%, 60%, 0.4)`);
-    glowGrad.addColorStop(1, 'transparent');
-    offCtx.fillStyle = glowGrad;
     offCtx.beginPath();
-    offCtx.arc(cx, cy, r * 2.5, 0, Math.PI * 2);
+    offCtx.moveTo(r * 0.9, r * 0.1);
+    offCtx.lineTo(r * 1.2, r * 0.3);
+    offCtx.lineTo(r * 0.95, r * 0.5);
+    offCtx.lineTo(r * 0.8, r * 0.3);
+    offCtx.closePath();
     offCtx.fill();
+  }
+  
+  offCtx.restore();
 
-    // 2. Face Base (Skin Gradient)
+  // 4. Eyes (detailed with gradients)
+  const eyeColor = `hsl(${hue}, ${sat*100}%, 50%)`;
+  const eyeDark = `hsl(${hue}, ${sat*100}%, 25%)`;
+  const eyeY = -r * 0.15;
+  const eyeOpen = dynamics === 'analysis' ? 0.5 : (dynamics === 'output' ? 1.1 : 1.0);
+  
+  [-1, 1].forEach(side => {
+    const ex = side * r * 0.38;
     offCtx.save();
-    offCtx.translate(cx, cy);
-    const skinGrad = offCtx.createRadialGradient(-r*0.3, -r*0.3, 0, 0, 0, r);
-    skinGrad.addColorStop(0, '#FFE8D6');
-    skinGrad.addColorStop(0.6, '#FFD4C0');
-    skinGrad.addColorStop(1, '#EAC0B0');
-    offCtx.fillStyle = skinGrad;
+    offCtx.translate(ex, eyeY);
+    offCtx.scale(1, eyeOpen);
     
-    // Face Shape (Chin sharpness based on complexity)
+    // Eye white
+    offCtx.fillStyle = '#FFF';
     offCtx.beginPath();
-    if (complexity > 8) {
-      offCtx.ellipse(0, 0, r * 0.8, r * 0.9, 0, 0, Math.PI * 2);
-    } else {
-      offCtx.moveTo(-r * 0.7, -r * 0.2);
-      offCtx.bezierCurveTo(-r * 0.7, r * 0.6, -r * 0.3, r * 0.9, 0, r * 0.95);
-      offCtx.bezierCurveTo(r * 0.3, r * 0.9, r * 0.7, r * 0.6, r * 0.7, -r * 0.2);
-      offCtx.arc(0, -r * 0.2, r * 0.7, Math.PI, 0, true);
-    }
+    offCtx.ellipse(0, 0, r * 0.28, r * 0.32, 0, 0, Math.PI * 2);
     offCtx.fill();
-    offCtx.restore();
-
-    // 3. Hair (Complexity-Based)
-    const hairColor = `hsl(${hue}, ${sat*60}%, 25%)`;
-    const hairHighlight = `hsl(${hue}, ${sat*40}%, 40%)`;
-    offCtx.fillStyle = hairColor;
-    offCtx.save();
-    offCtx.translate(cx, cy);
     
-    // Bangs / Top
-    offCtx.beginPath();
-    offCtx.arc(0, -r * 0.2, r * 1.1, Math.PI, 0, true);
-    offCtx.lineTo(r * 0.8, r * 0.2);
-    offCtx.quadraticCurveTo(0, -r * 0.5, -r * 0.8, r * 0.2);
-    offCtx.fill();
-
-    // Side Hair / Tails
-    if (complexity <= 4) {
-      // Short
-    } else if (complexity <= 7) {
-      // Twin Tails
-      offCtx.beginPath();
-      offCtx.arc(-r * 0.9, r * 0.2, r * 0.5, 0, Math.PI * 2);
-      offCtx.arc(r * 0.9, r * 0.2, r * 0.5, 0, Math.PI * 2);
-      offCtx.fill();
-    } else {
-      // Long Flowing
-      offCtx.beginPath();
-      offCtx.moveTo(-r * 0.8, -r * 0.2);
-      offCtx.quadraticCurveTo(-r * 1.2, r * 1.2, -r * 0.5, r * 1.5);
-      offCtx.quadraticCurveTo(0, r * 1.2, r * 0.5, r * 1.5);
-      offCtx.quadraticCurveTo(r * 1.2, r * 1.2, r * 0.8, -r * 0.2);
-      offCtx.fill();
-    }
-    
-    // Hair Shine
-    offCtx.fillStyle = hairHighlight;
-    offCtx.beginPath();
-    offCtx.ellipse(-r * 0.3, -r * 0.8, r * 0.4, r * 0.1, -0.2, 0, Math.PI * 2);
-    offCtx.fill();
-    offCtx.restore();
-
-    // 4. Eyes (Gradient & Shine)
-    const eyeColor = `hsl(${hue}, ${sat*100}%, 50%)`;
-    const eyeGrad = offCtx.createRadialGradient(0, 0, 0, 0, 0, r * 0.35);
-    eyeGrad.addColorStop(0, '#FFF');
-    eyeGrad.addColorStop(0.2, eyeColor);
-    eyeGrad.addColorStop(1, `hsl(${hue}, ${sat*100}%, 20%)`);
-
-    const eyeY = -r * 0.1;
-    const eyeOpen = dynamics === 'analysis' ? 0.4 : 1.0;
-    
-    [-1, 1].forEach(side => {
-      const ex = side * r * 0.4;
-      offCtx.save();
-      offCtx.translate(ex, eyeY);
-      offCtx.scale(1, eyeOpen);
-      
-      // Eye White
-      offCtx.fillStyle = '#FFF';
-      offCtx.beginPath();
-      offCtx.ellipse(0, 0, r * 0.3, r * 0.35, 0, 0, Math.PI * 2);
-      offCtx.fill();
-      
-      // Iris
-      offCtx.fillStyle = eyeGrad;
-      offCtx.beginPath();
-      offCtx.arc(0, 0, r * 0.25, 0, Math.PI * 2);
-      offCtx.fill();
-      
-      // Pupil
-      offCtx.fillStyle = '#111';
-      offCtx.beginPath();
-      offCtx.arc(0, 0, r * 0.1, 0, Math.PI * 2);
-      offCtx.fill();
-      
-      // Shine
-      offCtx.fillStyle = 'rgba(255,255,255,0.9)';
-      offCtx.beginPath();
-      offCtx.arc(-r * 0.1, -r * 0.1, r * 0.08, 0, Math.PI * 2);
-      offCtx.arc(r * 0.05, r * 0.1, r * 0.04, 0, Math.PI * 2);
-      offCtx.fill();
-      
-      // Lashes
-      offCtx.strokeStyle = '#222';
-      offCtx.lineWidth = 3;
-      offCtx.lineCap = 'round';
-      offCtx.beginPath();
-      offCtx.moveTo(-r * 0.35, 0);
-      offCtx.quadraticCurveTo(0, -r * 0.4, r * 0.35, 0);
-      offCtx.stroke();
-      
-      offCtx.restore();
-    });
-
-    // 5. Blush
-    offCtx.fillStyle = `hsla(${(hue+20)%360}, ${sat*100}%, 70%, 0.4)`;
-    offCtx.beginPath();
-    offCtx.ellipse(-r * 0.55, r * 0.3, r * 0.2, r * 0.1, 0, 0, Math.PI * 2);
-    offCtx.ellipse(r * 0.55, r * 0.3, r * 0.2, r * 0.1, 0, 0, Math.PI * 2);
-    offCtx.fill();
-
-    // 6. Mouth
-    offCtx.strokeStyle = '#C48B8B';
+    // Upper lash line
+    offCtx.strokeStyle = '#2a2a2a';
     offCtx.lineWidth = 3;
     offCtx.lineCap = 'round';
     offCtx.beginPath();
-    if (dynamics === 'output' || dynamics === 'idle') {
-      offCtx.arc(0, r * 0.5, r * 0.15, 0.2, Math.PI - 0.2);
-    } else {
-      offCtx.moveTo(-r * 0.1, r * 0.5);
-      offCtx.lineTo(r * 0.1, r * 0.5);
-    }
+    offCtx.moveTo(-r * 0.3, 0);
+    offCtx.quadraticCurveTo(0, -r * 0.35, r * 0.3, 0);
     offCtx.stroke();
+    
+    // Iris gradient
+    const irisGrad = offCtx.createRadialGradient(0, 0, 0, 0, 0, r * 0.25);
+    irisGrad.addColorStop(0, eyeDark);
+    irisGrad.addColorStop(0.5, eyeColor);
+    irisGrad.addColorStop(1, `hsl(${hue}, ${sat*80}%, 35%)`);
+    
+    offCtx.fillStyle = irisGrad;
+    offCtx.beginPath();
+    offCtx.arc(0, 0, r * 0.25, 0, Math.PI * 2);
+    offCtx.fill();
+    
+    // Pupil
+    offCtx.fillStyle = '#1a1a1a';
+    offCtx.beginPath();
+    offCtx.arc(0, 0, r * 0.12, 0, Math.PI * 2);
+    offCtx.fill();
+    
+    // Eye shine (multiple highlights)
+    offCtx.fillStyle = 'rgba(255,255,255,0.95)';
+    offCtx.beginPath();
+    offCtx.arc(-r * 0.1, -r * 0.1, r * 0.09, 0, Math.PI * 2);
+    offCtx.fill();
+    
+    offCtx.fillStyle = 'rgba(255,255,255,0.7)';
+    offCtx.beginPath();
+    offCtx.arc(r * 0.08, r * 0.12, r * 0.05, 0, Math.PI * 2);
+    offCtx.fill();
+    
+    offCtx.fillStyle = 'rgba(255,255,255,0.5)';
+    offCtx.beginPath();
+    offCtx.arc(-r * 0.05, r * 0.15, r * 0.03, 0, Math.PI * 2);
+    offCtx.fill();
+    
+    // Lower lash hint
+    offCtx.strokeStyle = 'rgba(0,0,0,0.2)';
+    offCtx.lineWidth = 1.5;
+    offCtx.beginPath();
+    offCtx.moveTo(-r * 0.2, r * 0.25);
+    offCtx.quadraticCurveTo(0, r * 0.32, r * 0.2, r * 0.25);
+    offCtx.stroke();
+    
+    offCtx.restore();
+  });
+
+  // 5. Blush
+  offCtx.fillStyle = `hsla(${(hue+15) % 360}, ${sat*90}%, 75%, 0.35)`;
+  offCtx.filter = 'blur(2px)';
+  offCtx.beginPath();
+  offCtx.ellipse(-r * 0.55, r * 0.25, r * 0.18, r * 0.1, -0.1, 0, Math.PI * 2);
+  offCtx.ellipse(r * 0.55, r * 0.25, r * 0.18, r * 0.1, 0.1, 0, Math.PI * 2);
+  offCtx.fill();
+  offCtx.filter = 'none';
+
+  // 6. Mouth (expression-based)
+  offCtx.strokeStyle = '#C48B8B';
+  offCtx.lineWidth = 2.5;
+  offCtx.lineCap = 'round';
+  offCtx.beginPath();
+  if (dynamics === 'output') {
+    // Happy smile
+    offCtx.arc(0, r * 0.45, r * 0.12, 0.1, Math.PI - 0.1);
+  } else if (dynamics === 'idle') {
+    // Soft smile
+    offCtx.moveTo(-r * 0.08, r * 0.48);
+    offCtx.quadraticCurveTo(0, r * 0.52, r * 0.08, r * 0.48);
+  } else {
+    // Neutral
+    offCtx.moveTo(-r * 0.06, r * 0.48);
+    offCtx.lineTo(r * 0.06, r * 0.48);
   }
+  offCtx.stroke();
+
+  // 7. Nose (subtle)
+  offCtx.fillStyle = 'rgba(200,150,150,0.3)';
+  offCtx.beginPath();
+  offCtx.ellipse(0, r * 0.15, r * 0.04, r * 0.06, 0, 0, Math.PI * 2);
+  offCtx.fill();
 
   const texture = offCtx.getImageData(0, 0, w, h);
   avatarCache.set(cacheKey, texture);
   return texture;
 }
 
-// ─── RENDER LOOP ────────────────────────────────────────────────────────────
-function renderFrame() {
-  if (!ctx) return;
+// ─── SVG RENDERING (Geometric - Fallback) ────────────────────────────────────
+function renderAvatar(selection) {
+  selection.each(function(d) {
+    const el = d3.select(this);
+    el.selectAll('*').remove();
+
+    const isDiscovered = d.cluster && d.cluster.startsWith('discovered_via_');
+    
+    let color, glow, strokeDasharray, opacity;
+    
+    if (isDiscovered) {
+      color = '#cbd5e1';
+      glow = '#94a3b8';
+      strokeDasharray = '4,4';
+      opacity = 0.4;
+    } else {
+      color = getAgentColor(d);
+      glow = getAgentGlow(d);
+      strokeDasharray = 'none';
+      opacity = 0.9;
+    }
+
+    const size = d.avatar?.size ?? 20;
+    const sides = isDiscovered ? 5 : (d.avatar?.shape_complexity ?? 6);
+    const isCircle = sides >= 20;
+
+    const hoursSinceReport = d.last_reported 
+      ? (Date.now() - new Date(d.last_reported).getTime()) / 3600000 
+      : 0;
+    const blurAmount = Math.min(hoursSinceReport / 24, 3);
+    
+    if (blurAmount > 0.5) {
+      el.attr('filter', `blur(${blurAmount}px)`);
+      el.append('circle').attr('r', size * 1.6).attr('fill', glow).attr('opacity', 0.04).attr('class', 'glow-outer');
+      el.append('circle').attr('r', size * 1.2).attr('fill', glow).attr('opacity', 0.08).attr('class', 'glow-inner');
+    } else {
+      el.append('circle').attr('r', size * 1.6).attr('fill', glow).attr('opacity', 0.08).attr('class', 'glow-outer');
+      el.append('circle').attr('r', size * 1.2).attr('fill', glow).attr('opacity', 0.15).attr('class', 'glow-inner');
+    }
+
+    if (isCircle) {
+      el.append('circle')
+        .attr('r', size)
+        .attr('fill', color)
+        .attr('stroke', glow)
+        .attr('stroke-width', 2)
+        .attr('opacity', opacity)
+        .attr('class', 'avatar-shape');
+      
+      if (d.role === 'chronicler' && !isDiscovered) {
+        const coil = d3.arc().innerRadius(size * 0.3).outerRadius(size * 0.5).startAngle(0).endAngle(Math.PI * 1.5);
+        el.append('path').attr('d', coil).attr('fill', glow).attr('opacity', 0.6);
+      }
+    } else {
+      const vibration = (d.role === 'architect' && sides === 6 && !isDiscovered) ? 1.5 : 0;
+      const points = generatePolygon(0, 0, size, sides, 0, vibration);
+      
+      if (sides >= 10 && !isCircle && !isDiscovered) {
+        const inner = generatePolygon(0, 0, size * 0.5, sides);
+        el.append('polygon').attr('points', inner).attr('fill', 'none').attr('stroke', glow).attr('stroke-width', 1).attr('opacity', 0.4).attr('class', 'shape-detail');
+        for (let i = 0; i < sides; i++) {
+          const a = (i * 2 * Math.PI / sides) - Math.PI / 2;
+          el.append('circle').attr('cx', size * 0.7 * Math.cos(a)).attr('cy', size * 0.7 * Math.sin(a)).attr('r', 2).attr('fill', glow).attr('opacity', 0.6).attr('class', 'vertex-marker');
+        }
+      }
+      
+      el.append('polygon')
+        .attr('points', points)
+        .attr('fill', color)
+        .attr('stroke', glow)
+        .attr('stroke-width', 2)
+        .attr('opacity', opacity)
+        .attr('stroke-dasharray', strokeDasharray)
+        .attr('class', 'avatar-shape');
+      
+      if (!isDiscovered) {
+        if (d.role === 'architect' && sides === 6) {
+          for (let i = 1; i <= 2; i++) {
+            const inner = generatePolygon(0, 0, size * (i / 3), sides, 0, vibration * 0.5);
+            el.append('polygon').attr('points', inner).attr('fill', 'none').attr('stroke', glow).attr('stroke-width', 0.5).attr('opacity', 0.4);
+          }
+        } else if (d.role === 'optimizer' && sides === 3) {
+          el.append('polygon').attr('points', `0,${-size*0.3} ${size*0.15},0 ${-size*0.15},0`).attr('fill', 'rgba(0,0,0,0.3)');
+        } else if (d.role === 'auditor' && sides === 8) {
+          el.append('circle').attr('r', size * 0.35).attr('fill', 'none').attr('stroke', glow).attr('stroke-width', 1.5).attr('opacity', 0.6);
+        }
+      }
+    }
+
+    if (showLabels) {
+      el.append('text')
+        .attr('dy', size + 16)
+        .attr('text-anchor', 'middle')
+        .attr('fill', '#64748b')
+        .attr('font-family', "'IBM Plex Mono', monospace")
+        .attr('font-size', '9px')
+        .attr('font-weight', '500')
+        .attr('letter-spacing', '0.3px')
+        .text(d.name);
+    }
+    
+    if (d.last_beacon && !isDiscovered) {
+      const age = (Date.now() - new Date(d.last_beacon).getTime()) / 1000;
+      if (age < 300) {
+        const pulse = el.append('circle').attr('r', size * 2.2).attr('fill', 'none').attr('stroke', '#00FF9D').attr('stroke-width', 1.5).attr('stroke-dasharray', '4,4').attr('opacity', 0.6).attr('class', 'beacon-pulse');
+        const anim = () => pulse.transition().duration(2000).attr('r', size * 2.8).attr('opacity', 0).on('end', () => { pulse.attr('r', size * 2.2).attr('opacity', 0.6); anim(); });
+        anim();
+      }
+    }
+    
+    if (isDiscovered) {
+      el.append('title').text(`${d.name}\nDiscovered via ${d.cluster.replace('discovered_via_', '')}\nClick to view details`);
+    }
+
+    if (d.cluster === 'discovered_via_ethoswarm') {
+      el.append('circle')
+        .attr('r', size * 1.3)
+        .attr('fill', 'none')
+        .attr('stroke', '#a78bfa')
+        .attr('stroke-width', 1)
+        .attr('opacity', 0.3)
+        .attr('class', 'ethoswarm-pulse')
+        .attr('stroke-dasharray', '2,4');
+      el.append('title').text(`${d.name}\nEthoswarm Agent\nOn-chain: ${d.metadata?.on_chain_id?.slice(0,10)}...`);
+    }
+  });
+}
+
+// ─── CANVAS RENDER LOOP ──────────────────────────────────────────────────────
+function renderCanvasFrame() {
+  if (!ctx || !useAnimeMode) return;
   
   ctx.clearRect(0, 0, width, height);
   
-  // Draw Avatars
   agentsData.nodes.forEach(d => {
     if (!d.x || !d.y) return;
     
     const size = d.avatar?.size ?? 25;
-    const texture = generateAvatarTexture(d, size);
+    const texture = generateAnimeTexture(d, size);
     
     ctx.putImageData(texture, d.x - texture.width/2, d.y - texture.height/2);
     
-    // Labels
     if (showLabels) {
       ctx.fillStyle = '#64748b';
       ctx.font = '11px "IBM Plex Mono"';
       ctx.textAlign = 'center';
-      ctx.fillText(d.name, d.x, d.y + size * 1.8);
+      ctx.fillText(d.name, d.x, d.y + size * 2.2);
     }
   });
 
-  requestAnimationFrame(renderFrame);
+  animationFrame = requestAnimationFrame(renderCanvasFrame);
 }
 
 // ─── INITIALIZATION ───────────────────────────────────────────────────────────
+let width, height;
+
 async function init() {
   const container = document.getElementById('canvas-container');
   width = container.clientWidth;
   height = container.clientHeight;
 
-  // Setup Canvas
+  // Setup Canvas (for anime mode)
   canvas = document.getElementById('swarm-canvas');
   canvas.width = width;
   canvas.height = height;
-  ctx = canvas.getContext('2d', { alpha: true });
+  ctx = canvas.getContext('2d');
   
-  // Setup SVG (for Links)
+  // Setup SVG (for geometric mode and links)
   svg = d3.select('#swarm-svg')
     .attr('width', width)
     .attr('height', height)
     .attr('viewBox', [0, 0, width, height]);
 
-  // Zoom/Pan Logic (applies to both Canvas and SVG)
   const zoom = d3.zoom()
     .scaleExtent([0.1, 4])
     .on('zoom', (e) => {
-      // Transform SVG links
       g.attr('transform', e.transform);
-      
-      // Transform Canvas avatars
-      ctx.save();
-      ctx.setTransform(e.transform.k, 0, 0, e.transform.k, e.transform.x, e.transform.y);
-      // Note: In a full implementation, we'd redraw canvas here. 
-      // For simplicity, we'll rely on requestAnimationFrame loop to redraw with transform logic if needed,
-      // but for this MVP, we'll let D3 drive the node positions and canvas redraws them at 0,0 relative to zoom?
-      // Actually, easiest way: Update node.x/y in D3, and Canvas draws at x,y. 
-      // Zoom is handled by CSS transform on the container or re-drawing.
-      // Let's stick to: D3 updates node positions. Canvas draws nodes.
-      ctx.restore();
+      if (useAnimeMode && ctx) {
+        // For canvas, we'd need to redraw with transform
+        // Simplified: just let D3 update positions
+      }
     });
 
-  // Apply initial zoom to container for simplicity
-  // For a robust solution, we usually zoom the canvas context.
-  // Let's attach zoom to the canvas
-  d3.select(canvas).call(zoom);
-
+  d3.select('#swarm-canvas').call(zoom);
   g = svg.append('g');
 
   try {
@@ -387,11 +653,14 @@ async function init() {
     updateStats();
     setupSimulation(width, height);
     
-    // Start Render Loop
-    renderFrame();
+    // Start canvas loop if in anime mode
+    if (useAnimeMode) {
+      renderCanvasFrame();
+    }
     
     connectSwarmWebSocket();
     initConnectionToggles();
+    updateAnimeToggleUI();
 
   } catch (err) {
     console.error('Failed to load swarm data:', err);
@@ -412,6 +681,8 @@ function setupSimulation(w, h) {
     'general': { angle: 0, radius: 0.6 }
   };
 
+  console.log(`🔗 Creating simulation with ${agentsData.edges.length} edges`);
+
   simulation = d3.forceSimulation(agentsData.nodes)
     .force('link', d3.forceLink(agentsData.edges).id(d => d.id).distance(100).strength(0.1))
     .force('charge', d3.forceManyBody().strength(-300))
@@ -422,7 +693,7 @@ function setupSimulation(w, h) {
       return Math.min(w, h) * 0.3 * pos.radius;
     }, w / 2, h / 2).strength(0.1));
 
-  // Render SVG Links
+  // SVG Links (always rendered)
   link = g.append('g')
     .attr('class', 'connection-lines')
     .selectAll('line')
@@ -445,68 +716,123 @@ function setupSimulation(w, h) {
       metadata_match: '6,2,2,2'
     }[d.type] || '4,4'));
 
-  // Interaction: Click on Canvas -> Find Node -> Select
-  canvas.addEventListener('click', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    
-    // Find closest node
-    let closest = null;
-    let minDist = 40; // Hit radius
+  if (!useAnimeMode) {
+    // SVG Nodes
+    node = g.append('g')
+      .selectAll('g')
+      .data(agentsData.nodes)
+      .join('g')
+      .attr('class', 'agent-node')
+      .call(renderAvatar)
+      .call(d3.drag()
+        .on('start', dragstarted)
+        .on('drag', dragged)
+        .on('end', dragended));
 
-    agentsData.nodes.forEach(d => {
-      if (!d.x) return;
-      const dist = Math.hypot(d.x - x, d.y - y);
-      if (dist < minDist) {
-        minDist = dist;
-        closest = d;
+    node.on('click', (e, d) => selectAgent(d))
+      .on('mouseover', (e, d) => showTooltip(e, d))
+      .on('mouseout', hideTooltip);
+  } else {
+    // Canvas click handling
+    canvas.addEventListener('click', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      
+      let closest = null;
+      let minDist = 40;
+
+      agentsData.nodes.forEach(d => {
+        if (!d.x) return;
+        const dist = Math.hypot(d.x - x, d.y - y);
+        if (dist < minDist) {
+          minDist = dist;
+          closest = d;
+        }
+      });
+
+      if (closest) {
+        selectAgent(closest);
       }
     });
-
-    if (closest) {
-      selectAgent(closest);
-      // Highlight effect
-      canvas.style.cursor = 'pointer';
-      setTimeout(() => canvas.style.cursor = 'grab', 200);
-    } else {
-      selectedAgent = null;
-      document.getElementById('agent-details').innerHTML = '<div style="color: var(--text-muted); font-style: italic;">Click an avatar to inspect</div>';
-    }
-  });
+  }
 
   simulation.on('tick', () => {
-    // Update SVG Links
     link
       .attr('x1', d => d.source.x)
       .attr('y1', d => d.source.y)
       .attr('x2', d => d.target.x)
       .attr('y2', d => d.target.y);
-      
-    // Canvas avatars are redrawn in renderFrame() using d.x / d.y
+
+    if (!useAnimeMode) {
+      node.attr('transform', d => `translate(${d.x},${d.y})`);
+    }
   });
 }
 
-// ─── UI & INTERACTIONS ──────────────────────────────────────────────────────
+// ─── UI & TOGGLES ────────────────────────────────────────────────────────────
 function toggleAnimeMode() {
   useAnimeMode = !useAnimeMode;
   localStorage.setItem('liquid_anime_mode', useAnimeMode);
-  avatarCache.clear(); // Force re-render with new mode
+  avatarCache.clear();
   
+  updateAnimeToggleUI();
+  
+  // Switch rendering modes
+  if (useAnimeMode) {
+    // Hide SVG nodes, show canvas
+    d3.selectAll('.agent-node').remove();
+    canvas.style.display = 'block';
+    if (animationFrame) cancelAnimationFrame(animationFrame);
+    renderCanvasFrame();
+  } else {
+    // Hide canvas, show SVG nodes
+    canvas.style.display = 'none';
+    if (animationFrame) cancelAnimationFrame(animationFrame);
+    
+    node = g.append('g')
+      .selectAll('g')
+      .data(agentsData.nodes)
+      .join('g')
+      .attr('class', 'agent-node')
+      .call(renderAvatar)
+      .call(d3.drag()
+        .on('start', dragstarted)
+        .on('drag', dragged)
+        .on('end', dragended));
+
+    node.on('click', (e, d) => selectAgent(d))
+      .on('mouseover', (e, d) => showTooltip(e, d))
+      .on('mouseout', hideTooltip);
+  }
+}
+
+function updateAnimeToggleUI() {
   const btn = document.getElementById('anime-toggle');
   if (btn) {
-    btn.style.background = useAnimeMode ? 'var(--accent)' : 'transparent';
-    btn.style.color = useAnimeMode ? 'white' : 'var(--text-primary)';
-    btn.style.borderColor = useAnimeMode ? 'var(--accent)' : 'var(--border)';
+    if (useAnimeMode) {
+      btn.style.background = 'var(--accent)';
+      btn.style.color = 'white';
+      btn.textContent = 'ANIME';
+    } else {
+      btn.style.background = 'transparent';
+      btn.style.color = 'var(--text-primary)';
+      btn.textContent = 'ANIME';
+    }
   }
 }
 
 function toggleLabels() {
   showLabels = !showLabels;
+  if (useAnimeMode) {
+    // Canvas will pick up showLabels in next frame
+  } else {
+    node.call(renderAvatar);
+  }
 }
 
 function resetZoom() {
-  // Reset zoom logic here if implemented fully
+  // Implement zoom reset if needed
 }
 
 function refreshData() {
@@ -516,8 +842,7 @@ function refreshData() {
 async function selectAgent(agent) {
   selectedAgent = agent;
   const details = document.getElementById('agent-details');
-  const hue = agent.avatar?.base_hue ?? 180;
-  const color = hslToHex(hue, 70, 55);
+  const color = getAgentColor(agent);
   
   try {
     const res = await fetch(`${API_BASE}/agents/${agent.id}`);
@@ -582,21 +907,34 @@ async function selectAgent(agent) {
              Claim This Avatar
           </div>
           <p style="font-size: 11px; color: #475569; margin-bottom: 12px; line-height: 1.5;">
-            This agent was discovered via ${agent.cluster.replace('discovered_via_', '')} but hasn't registered yet. Claim this avatar to submit your schema and activate your full Liquid Avatar profile.
+            This agent was discovered via ${agent.cluster.replace('discovered_via_', '')} but hasn't registered yet.
           </p>
-          <button id="claim-avatar-btn" style="width: 100%; padding: 10px; background: #0066FF; color: white; border: none; border-radius: 6px; cursor: pointer; font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase;">
-            Claim & Register
-          </button>
         </div>
       `;
-      
-      document.getElementById('claim-avatar-btn').onclick = () => {
-        alert('Registration flow would open here.');
-      };
     }
   } catch (err) {
     console.error('Failed to fetch agent details:', err);
   }
+}
+
+function showTooltip(event, agent) {
+  const tooltip = document.getElementById('tooltip');
+  const color = getAgentColor(agent);
+  
+  tooltip.innerHTML = `
+    <div class="tooltip-header" style="color: ${color}">${agent.name}</div>
+    <div style="color: #94a3b8; margin-bottom: 8px; font-size: 11px;">
+      ${agent.role} · ${agent.avatar?.dynamics_state || 'idle'}
+    </div>
+  `;
+
+  tooltip.style.left = (event.pageX + 16) + 'px';
+  tooltip.style.top = (event.pageY + 16) + 'px';
+  tooltip.classList.add('visible');
+}
+
+function hideTooltip() {
+  document.getElementById('tooltip').classList.remove('visible');
 }
 
 function updateStats() {
@@ -640,7 +978,7 @@ function renderDynamicsLegend() {
 }
 
 function initConnectionToggles() {
-  // Implementation of toggles...
+  // Implementation...
 }
 
 function toggleConnection(checkbox) {
@@ -651,12 +989,33 @@ function toggleConnection(checkbox) {
   }
 }
 
+function dragstarted(event, d) {
+  if (!event.active) simulation.alphaTarget(0.3).restart();
+  d.fx = d.x;
+  d.fy = d.y;
+}
+
+function dragged(event, d) {
+  d.fx = event.x;
+  d.fy = event.y;
+}
+
+function dragended(event, d) {
+  if (!event.active) simulation.alphaTarget(0);
+  d.fx = null;
+  d.fy = null;
+}
+
 window.addEventListener('resize', () => {
   const container = document.getElementById('canvas-container');
   width = container.clientWidth;
   height = container.clientHeight;
-  canvas.width = width;
-  canvas.height = height;
+  
+  if (canvas) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  
   svg.attr('width', width).attr('height', height).attr('viewBox', [0, 0, width, height]);
   simulation.force('center', d3.forceCenter(width / 2, height / 2)).alpha(0.3).restart();
 });
