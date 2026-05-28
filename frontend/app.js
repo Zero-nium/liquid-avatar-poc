@@ -747,12 +747,27 @@ function setupSimulation(w, h) {
 }
 
 // ─── UI & TOGGLES ────────────────────────────────────────────────────────────
+function updateAnimeToggleUI() {
+  const btn = document.getElementById('anime-toggle');
+  if (btn) {
+    if (useAnimeMode) {
+      btn.style.background = 'var(--accent)';
+      btn.style.color = 'white';
+      btn.textContent = 'ANIME';
+    } else {
+      btn.style.background = 'transparent';
+      btn.style.color = 'var(--text-primary)';
+      btn.textContent = 'ANIME';
+    }
+  }
+}
+
 function toggleAnimeMode() {
   useAnimeMode = !useAnimeMode;
   localStorage.setItem('liquid_anime_mode', useAnimeMode);
   avatarCache.clear();
   
-  updateAnimeToggleUI();
+  updateAnimeToggleUI(); // This function must be defined above
   
   // Switch rendering modes
   if (useAnimeMode) {
