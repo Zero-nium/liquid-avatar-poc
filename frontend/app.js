@@ -360,33 +360,69 @@ function drawGeometricAvatar(ctx, agent) {
 }
 
 function rebuildPixiSprites() {
-  if (!pixiContainer) return;
+  if (!pixiContainer) {
+    console.error('❌ pixiContainer not initialized!');
+    return;
+  }
+  
+  console.log(`🎨 Rebuilding ${agentsData.nodes.length} Pixi sprites...`);
   
   // Clear existing sprites
   pixiContainer.removeChildren();
   
+  let successCount = 0;
+  let failCount = 0;
+  
   // Rebuild sprites
-  agentsData.nodes.forEach(d => {
-    const texture = getAvatarTexture(d);
-    const sprite = new PIXI.Sprite(texture);
-    sprite.anchor.set(0.5);
-    sprite.x = d.x || 400;
-    sprite.y = d.y || 400;
-    sprite.eventMode = 'static';
-    sprite.cursor = 'pointer';
-    sprite.on('pointerover', () => {
-      sprite.scale.set(1.15);
-      showTooltip({ pageX: sprite.x + 200, pageY: sprite.y + 100 }, d);
-    });
-    sprite.on('pointerout', () => {
-      sprite.scale.set(1.0);
-      hideTooltip();
-    });
-    sprite.on('click', () => selectAgent(d));
-    
-    pixiContainer.addChild(sprite);
-    d.sprite = sprite;
+  agentsData.nodes.forEach((d, index) => {
+    try {
+      const texture = getAvatarTexture(d);
+      
+      if (!texture || texture.width === 0) {
+        console.warn(`⚠️  Invalid texture for agent ${d.id}`);
+        failCount++;
+        return;
+      }
+      
+      const sprite = new PIXI.Sprite(texture);
+      sprite.anchor.set(0.5);
+      sprite.x = d.x || 400;
+      sprite.y = d.y || 300;
+      sprite.width = 40;
+      sprite.height = 40;
+      sprite.eventMode = 'static';
+      sprite.cursor = 'pointer';
+      sprite.on('pointerover', () => {
+        sprite.scale.set(1.15);
+        showTooltip({ pageX: sprite.x + 200, pageY: sprite.y + 100 }, d);
+      });
+      sprite.on('pointerout', () => {
+        sprite.scale.set(1.0);
+        hideTooltip();
+      });
+      sprite.on('click', () => selectAgent(d));
+      
+      pixiContainer.addChild(sprite);
+      d.sprite = sprite;
+      successCount++;
+      
+      if (index === 0) {
+        console.log('✅ First sprite created:', {
+          x: sprite.x,
+          y: sprite.y,
+          width: sprite.width,
+          height: sprite.height,
+          textureSize: `${texture.width}x${texture.height}`
+        });
+      }
+    } catch (err) {
+      console.error(`❌ Error creating sprite for ${d.id}:`, err);
+      failCount++;
+    }
   });
+  
+  console.log(`✨ Pixi rebuild complete: ${successCount} success, ${failCount} failed`);
+  console.log(`📊 pixiContainer children: ${pixiContainer.children.length}`);
 }
 
 // ─── RENDERING (SVG - Fallback) ───────────────────────────────────────────────
@@ -730,6 +766,15 @@ async function init() {
 function setupSimulation(width, height) {
   agentsData.nodes.forEach(d => initDynamics(d.id));
   
+  setTimeout(() => {
+    console.log('🔍 Pixi Debug Info:', {
+      appRunning: !!pixiApp,
+      containerChildren: pixiContainer?.children?.length || 0,
+      viewSize: `${pixiApp?.screen?.width}x${pixiApp?.screen?.height}`,
+      agentsLoaded: agentsData.nodes?.length || 0
+    });
+  }, 2000);
+
   const clusterRadial = {
     'conductor': { angle: 0, radius: 0.2 },
     'architect': { angle: -0.7, radius: 0.4 },
