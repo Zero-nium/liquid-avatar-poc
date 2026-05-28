@@ -1,6 +1,6 @@
 /**
 Liquid Avatar — Swarm Visualization Engine v1.2
-D3.js force-directed graph + Pixi.js WebGL rendering
+D3.js force-directed graph with SVG rendering
 Implements Council feedback: Schema v1.2 shapes, blur/vibration/permanence, connector toggles
 */
 const API_BASE = window.location.origin.includes('localhost')
@@ -16,24 +16,13 @@ let showLabels = false;
 let animationFrame;
 let showConnections = true;
 
-// ─── PIXI.JS STATE ───────────────────────────────────────────────────────────
-let pixiApp;
-let pixiContainer;
-let pixiLinks;
-const avatarTextures = {};
-let usePixi = true; // Toggle between D3 SVG and Pixi WebGL
-
 // ─── ANIME MODE STATE ──────────────────────────────────────────────────────
 let animeMode = localStorage.getItem('liquid_anime_mode') === 'true';
 
 function toggleAnimeMode() {
   animeMode = !animeMode;
   localStorage.setItem('liquid_anime_mode', animeMode);
-  if (usePixi) {
-    rebuildPixiSprites();
-  } else {
-    node.call(animeMode ? renderAnimeAvatar : renderAvatar);
-  }
+  node.call(animeMode ? renderAnimeAvatar : renderAvatar);
   updateAnimeToggleUI();
 }
 
@@ -98,19 +87,12 @@ function handleSwarmUpdate(msg) {
 
 function handleBeaconUpdate(data) {
   const agentId = data.agent_id;
-  if (usePixi) {
-    const sprite = agentsData.nodes.find(n => n.id === agentId)?.sprite;
-    if (sprite) {
-      sprite.alpha = 0.5;
-      setTimeout(() => { sprite.alpha = 1.0; }, 300);
-    }
-  } else {
-    const nodeSelection = svg.selectAll('.agent-node').filter(d => d.id === agentId);
-    if (!nodeSelection.empty()) {
-      const agentData = nodeSelection.data()[0];
-      agentData.last_beacon = data.timestamp;
-      renderAvatar(nodeSelection);
-    }
+  const nodeSelection = svg.selectAll('.agent-node').filter(d => d.id === agentId);
+  
+  if (!nodeSelection.empty()) {
+    const agentData = nodeSelection.data()[0];
+    agentData.last_beacon = data.timestamp;
+    renderAvatar(nodeSelection);
   }
 }
 
@@ -127,7 +109,7 @@ async function loadSwarmData() {
       simulation.force('link').links(agentsData.edges);
       simulation.alpha(1).restart();
 
-      // Update D3 links (keep for SVG mode)
+      // Update links
       link = link.data(agentsData.edges, d => `${d.source.id || d.source}-${d.target.id || d.target}`).join('line')
         .attr('class', d => `connection-line conn-${d.type || 'cluster_peer'}`)
         .attr('display', d => connectionFilters[d.type || 'cluster_peer'] ? 'inline' : 'none')
@@ -146,25 +128,20 @@ async function loadSwarmData() {
           metadata_match: '6,2,2,2'
         }[d.type] || '4,4'));
 
-      if (!usePixi) {
-        node = node.data(agentsData.nodes, d => d.id).join('g')
-          .attr('class', 'agent-node')
-          .call(renderAvatar)
-          .call(d3.drag()
-            .on('start', dragstarted)
-            .on('drag', dragged)
-            .on('end', dragended));
+      // Update nodes
+      node = node.data(agentsData.nodes, d => d.id).join('g')
+        .attr('class', 'agent-node')
+        .call(renderAvatar)
+        .call(d3.drag()
+          .on('start', dragstarted)
+          .on('drag', dragged)
+          .on('end', dragended));
 
-        node.on('click', (e, d) => selectAgent(d))
-          .on('mouseover', (e, d) => showTooltip(e, d))
-          .on('mouseout', hideTooltip);
-      }
+      node.on('click', (e, d) => selectAgent(d))
+        .on('mouseover', (e, d) => showTooltip(e, d))
+        .on('mouseout', hideTooltip);
 
       updateStats();
-      
-      if (usePixi) {
-        rebuildPixiSprites();
-      }
     }
   } catch (err) {
     console.error('Failed to load swarm data:', err);
@@ -209,7 +186,7 @@ function generatePolygon(cx, cy, r, sides, rotation = 0, vibration = 0) {
 // ─── DYNAMICS ─────────────────────────────────────────────────────────────────
 const dynamicsState = new Map();
 
-function initDynamics(agentId, dynamicsType) {
+function initDynamics(agentId) {
   if (!dynamicsState.has(agentId)) {
     dynamicsState.set(agentId, {
       phase: Math.random() * Math.PI * 2,
@@ -251,181 +228,7 @@ function computeDynamicsTransform(agent, time) {
   return { scale, rotation, opacity };
 }
 
-// ─── PIXI.JS TEXTURE GENERATION ──────────────────────────────────────────────
-function getAvatarTexture(agent) {
-  const isDiscovered = agent.cluster?.startsWith('discovered_via_');
-  const id = `${agent.id}-${agent.avatar?.base_hue}-${agent.avatar?.dynamics_state}-${isDiscovered}`;
-  
-  if (avatarTextures[id]) return avatarTextures[id];
-
-  const canvas = document.createElement('canvas');
-  canvas.width = 64;
-  canvas.height = 64;
-  const ctx = canvas.getContext('2d');
-
-  if (isDiscovered) {
-    // Draw placeholder pentagon
-    ctx.fillStyle = '#cbd5e1';
-    ctx.strokeStyle = '#94a3b8';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    for (let i = 0; i < 5; i++) {
-      const angle = (i * 2 * Math.PI / 5) - Math.PI / 2;
-      const x = 32 + 26 * Math.cos(angle);
-      const y = 32 + 26 * Math.sin(angle);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-  } else if (animeMode) {
-    drawVTuberFace(ctx, agent);
-  } else {
-    drawGeometricAvatar(ctx, agent);
-  }
-
-  const texture = PIXI.Texture.from(canvas);
-  avatarTextures[id] = texture;
-  return texture;
-}
-
-function drawVTuberFace(ctx, agent) {
-  const hue = agent.avatar?.base_hue ?? 180;
-  const sat = agent.avatar?.saturation ?? 0.75;
-  const dynamics = agent.avatar?.dynamics_state || 'idle';
-  
-  // Skin
-  ctx.fillStyle = '#FFDFD3';
-  ctx.beginPath();
-  ctx.arc(32, 32, 28, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Eyes
-  const eyeOpen = dynamics === 'analysis' ? 3 : 7;
-  const eyeColor = `hsl(${hue}, ${sat * 100}%, 45%)`;
-  ctx.fillStyle = eyeColor;
-  ctx.beginPath();
-  ctx.ellipse(20, 28, 5, eyeOpen, 0, 0, Math.PI * 2);
-  ctx.ellipse(44, 28, 5, eyeOpen, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Highlights
-  ctx.fillStyle = 'white';
-  ctx.beginPath();
-  ctx.arc(18, 26, 2.5, 0, Math.PI * 2);
-  ctx.arc(42, 26, 2.5, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Mouth
-  ctx.strokeStyle = '#D6A5A5';
-  ctx.lineWidth = 2;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.arc(32, 38, 5, 0, Math.PI, false);
-  ctx.stroke();
-  
-  // Hair
-  ctx.fillStyle = `hsl(${hue}, ${sat * 60}%, 30%)`;
-  ctx.beginPath();
-  ctx.moveTo(4, 32);
-  ctx.bezierCurveTo(10, 8, 54, 8, 60, 32);
-  ctx.lineTo(60, 8);
-  ctx.lineTo(4, 8);
-  ctx.fill();
-}
-
-function drawGeometricAvatar(ctx, agent) {
-  const hue = agent.avatar?.base_hue ?? 180;
-  const sat = Math.round((agent.avatar?.saturation ?? 0.8) * 100);
-  const sides = agent.avatar?.shape_complexity ?? 6;
-  const color = hslToHex(hue, sat, 55);
-  
-  ctx.fillStyle = color;
-  ctx.strokeStyle = hslToHex(hue, sat, 70);
-  ctx.lineWidth = 2;
-  
-  ctx.beginPath();
-  for (let i = 0; i < sides; i++) {
-    const angle = (i * 2 * Math.PI / sides) - Math.PI / 2;
-    const x = 32 + 26 * Math.cos(angle);
-    const y = 32 + 26 * Math.sin(angle);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-}
-
-function rebuildPixiSprites() {
-  if (!pixiContainer) {
-    console.error('❌ pixiContainer not initialized!');
-    return;
-  }
-  
-  console.log(`🎨 Rebuilding ${agentsData.nodes.length} Pixi sprites...`);
-  
-  // Clear existing sprites
-  pixiContainer.removeChildren();
-  
-  let successCount = 0;
-  let failCount = 0;
-  
-  // Rebuild sprites
-  agentsData.nodes.forEach((d, index) => {
-    try {
-      const texture = getAvatarTexture(d);
-      
-      if (!texture || texture.width === 0) {
-        console.warn(`⚠️  Invalid texture for agent ${d.id}`);
-        failCount++;
-        return;
-      }
-      
-      const sprite = new PIXI.Sprite(texture);
-      sprite.anchor.set(0.5);
-      sprite.x = d.x || 400;
-      sprite.y = d.y || 300;
-      sprite.width = 40;
-      sprite.height = 40;
-      sprite.eventMode = 'static';
-      sprite.cursor = 'pointer';
-      sprite.on('pointerover', () => {
-        sprite.scale.set(1.15);
-        showTooltip({ pageX: sprite.x + 200, pageY: sprite.y + 100 }, d);
-      });
-      sprite.on('pointerout', () => {
-        sprite.scale.set(1.0);
-        hideTooltip();
-      });
-      sprite.on('click', () => selectAgent(d));
-      
-      pixiContainer.addChild(sprite);
-      d.sprite = sprite;
-      successCount++;
-      
-      if (index === 0) {
-        console.log('✅ First sprite created:', {
-          x: sprite.x,
-          y: sprite.y,
-          width: sprite.width,
-          height: sprite.height,
-          textureSize: `${texture.width}x${texture.height}`
-        });
-      }
-    } catch (err) {
-      console.error(`❌ Error creating sprite for ${d.id}:`, err);
-      failCount++;
-    }
-  });
-  
-  console.log(`✨ Pixi rebuild complete: ${successCount} success, ${failCount} failed`);
-  console.log(`📊 pixiContainer children: ${pixiContainer.children.length}`);
-}
-
-// ─── RENDERING (SVG - Fallback) ───────────────────────────────────────────────
+// ─── RENDERING (SVG) ──────────────────────────────────────────────────────────
 function renderAvatar(selection) {
   selection.each(function(d) {
     const el = d3.select(this);
@@ -698,39 +501,15 @@ async function init() {
   const width = container.clientWidth;
   const height = container.clientHeight;
 
-  // Initialize Pixi.js
-  pixiApp = new PIXI.Application({
-    width: width,
-    height: height,
-    background: '#FFFFFF',
-    antialias: true,
-    resolution: window.devicePixelRatio || 1,
-    autoDensity: true
-  });
-  
-  document.getElementById('swarm-canvas').appendChild(pixiApp.view);
-  pixiContainer = new PIXI.Container();
-  pixiApp.stage.addChild(pixiContainer);
-  
-  // Keep SVG for links (or could use Pixi graphics)
+  // Use SVG for reliable rendering
   svg = d3.select('#swarm-canvas')
-    .append('svg')
     .attr('width', width)
     .attr('height', height)
-    .attr('viewBox', [0, 0, width, height])
-    .style('position', 'absolute')
-    .style('top', '0')
-    .style('left', '0')
-    .style('pointer-events', 'none');
+    .attr('viewBox', [0, 0, width, height]);
 
   const zoom = d3.zoom()
     .scaleExtent([0.1, 4])
-    .on('zoom', (e) => {
-      g.attr('transform', e.transform);
-      pixiContainer.scale.set(e.transform.k);
-      pixiContainer.x = e.transform.x;
-      pixiContainer.y = e.transform.y;
-    });
+    .on('zoom', (e) => g.attr('transform', e.transform));
 
   svg.call(zoom);
   g = svg.append('g');
@@ -766,15 +545,6 @@ async function init() {
 function setupSimulation(width, height) {
   agentsData.nodes.forEach(d => initDynamics(d.id));
   
-  setTimeout(() => {
-    console.log('🔍 Pixi Debug Info:', {
-      appRunning: !!pixiApp,
-      containerChildren: pixiContainer?.children?.length || 0,
-      viewSize: `${pixiApp?.screen?.width}x${pixiApp?.screen?.height}`,
-      agentsLoaded: agentsData.nodes?.length || 0
-    });
-  }, 2000);
-
   const clusterRadial = {
     'conductor': { angle: 0, radius: 0.2 },
     'architect': { angle: -0.7, radius: 0.4 },
@@ -822,22 +592,20 @@ function setupSimulation(width, height) {
       metadata_match: '6,2,2,2'
     }[d.type] || '4,4'));
 
-  if (!usePixi) {
-    node = g.append('g')
-      .selectAll('g')
-      .data(agentsData.nodes)
-      .join('g')
-      .attr('class', 'agent-node')
-      .call(renderAvatar)
-      .call(d3.drag()
-        .on('start', dragstarted)
-        .on('drag', dragged)
-        .on('end', dragended));
+  node = g.append('g')
+    .selectAll('g')
+    .data(agentsData.nodes)
+    .join('g')
+    .attr('class', 'agent-node')
+    .call(renderAvatar)
+    .call(d3.drag()
+      .on('start', dragstarted)
+      .on('drag', dragged)
+      .on('end', dragended));
 
-    node.on('click', (e, d) => selectAgent(d))
-      .on('mouseover', (e, d) => showTooltip(e, d))
-      .on('mouseout', hideTooltip);
-  }
+  node.on('click', (e, d) => selectAgent(d))
+    .on('mouseover', (e, d) => showTooltip(e, d))
+    .on('mouseout', hideTooltip);
 
   simulation.on('tick', () => {
     link
@@ -846,16 +614,7 @@ function setupSimulation(width, height) {
       .attr('x2', d => d.target.x)
       .attr('y2', d => d.target.y);
 
-    if (usePixi) {
-      agentsData.nodes.forEach(d => {
-        if (d.sprite) {
-          d.sprite.x = d.x;
-          d.sprite.y = d.y;
-        }
-      });
-    } else {
-      node.attr('transform', d => `translate(${d.x},${d.y})`);
-    }
+    node.attr('transform', d => `translate(${d.x},${d.y})`);
   });
 }
 
@@ -866,24 +625,22 @@ function startAnimationLoop() {
   function animate() {
     const elapsed = (Date.now() - startTime) / 1000;
 
-    if (!usePixi) {
-      node.each(function(d) {
-        const el = d3.select(this);
-        const dynamics = computeDynamicsTransform(d, elapsed);
+    node.each(function(d) {
+      const el = d3.select(this);
+      const dynamics = computeDynamicsTransform(d, elapsed);
 
-        el.select('.avatar-shape')
-          .attr('transform', `scale(${dynamics.scale}) rotate(${dynamics.rotation})`)
-          .attr('opacity', 0.9 * dynamics.opacity);
+      el.select('.avatar-shape')
+        .attr('transform', `scale(${dynamics.scale}) rotate(${dynamics.rotation})`)
+        .attr('opacity', 0.9 * dynamics.opacity);
 
-        el.select('.glow-outer')
-          .attr('opacity', dynamics.opacity * 0.08)
-          .attr('r', (d.avatar?.size ?? 20) * 1.6 * dynamics.scale);
+      el.select('.glow-outer')
+        .attr('opacity', dynamics.opacity * 0.08)
+        .attr('r', (d.avatar?.size ?? 20) * 1.6 * dynamics.scale);
 
-        el.select('.glow-inner')
-          .attr('opacity', dynamics.opacity * 0.15)
-          .attr('r', (d.avatar?.size ?? 20) * 1.2 * dynamics.scale);
-      });
-    }
+      el.select('.glow-inner')
+        .attr('opacity', dynamics.opacity * 0.15)
+        .attr('r', (d.avatar?.size ?? 20) * 1.2 * dynamics.scale);
+    });
 
     animationFrame = requestAnimationFrame(animate);
   }
@@ -1017,11 +774,9 @@ async function selectAgent(agent) {
       `;
     }
     
-    if (!usePixi) {
-      node.selectAll('.avatar-shape').attr('stroke-width', 2);
-      const selected = node.filter(d => d.id === agent.id);
-      selected.select('.avatar-shape').attr('stroke-width', 4);
-    }
+    node.selectAll('.avatar-shape').attr('stroke-width', 2);
+    const selected = node.filter(d => d.id === agent.id);
+    selected.select('.avatar-shape').attr('stroke-width', 4);
   } catch (err) {
     console.error('Failed to fetch agent details:', err);
   }
@@ -1188,11 +943,7 @@ function resetZoom() {
 
 function toggleLabels() {
   showLabels = !showLabels;
-  if (usePixi) {
-    rebuildPixiSprites();
-  } else {
-    node.call(animeMode ? renderAnimeAvatar : renderAvatar);
-  }
+  node.call(animeMode ? renderAnimeAvatar : renderAvatar);
 }
 
 function dragstarted(event, d) {
@@ -1216,10 +967,6 @@ window.addEventListener('resize', () => {
   const container = document.getElementById('canvas-container');
   const width = container.clientWidth;
   const height = container.clientHeight;
-  
-  if (pixiApp) {
-    pixiApp.renderer.resize(width, height);
-  }
   
   svg.attr('width', width).attr('height', height).attr('viewBox', [0, 0, width, height]);
   simulation.force('center', d3.forceCenter(width / 2, height / 2));
