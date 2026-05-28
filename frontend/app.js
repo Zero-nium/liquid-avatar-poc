@@ -204,178 +204,194 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   const complexity = agent.avatar?.shape_complexity ?? 5;
   const dynamics = agent.avatar?.dynamics_state || 'idle';
   
-  const r = size * 1.3;
-
+  const r = size * 1.2; // Slightly smaller to ensure it fits
+  
   ctx.save();
   ctx.translate(x, y);
 
-  // 1. Soft glow/aura
-  const glowGrad = ctx.createRadialGradient(0, 0, r * 0.5, 0, 0, r * 2.2);
-  glowGrad.addColorStop(0, `hsla(${hue}, ${sat*100}%, 60%, 0.3)`);
+  // 1. Soft glow/aura (drawn first, behind everything)
+  const glowGrad = ctx.createRadialGradient(0, 0, r * 0.3, 0, 0, r * 2.0);
+  glowGrad.addColorStop(0, `hsla(${hue}, ${sat*100}%, 60%, 0.2)`);
   glowGrad.addColorStop(1, 'transparent');
   ctx.fillStyle = glowGrad;
   ctx.beginPath();
-  ctx.arc(0, 0, r * 2.2, 0, Math.PI * 2);
+  ctx.arc(0, 0, r * 2.0, 0, Math.PI * 2);
   ctx.fill();
 
-  // 2. Face base with soft skin gradient
-  const skinGrad = ctx.createRadialGradient(-r*0.3, -r*0.3, 0, 0, 0, r);
+  // 2. Hair (drawn BEFORE face so it appears behind)
+  const hairColor = `hsl(${hue}, ${sat*70}%, 35%)`;
+  const hairShadow = `hsl(${hue}, ${sat*60}%, 25%)`;
+  const hairHighlight = `hsl(${hue}, ${sat*50}%, 50%)`;
+  
+  ctx.fillStyle = hairShadow;
+  ctx.beginPath();
+  ctx.arc(0, -r * 0.3, r * 0.95, Math.PI, 0, true);
+  if (complexity > 7) {
+    ctx.lineTo(r * 0.8, r * 1.0);
+    ctx.quadraticCurveTo(0, r * 1.3, -r * 0.8, r * 1.0);
+  } else {
+    ctx.lineTo(r * 0.6, r * 0.45);
+    ctx.quadraticCurveTo(0, r * 0.7, -r * 0.6, r * 0.45);
+  }
+  ctx.closePath();
+  ctx.fill();
+  
+  ctx.fillStyle = hairColor;
+  ctx.beginPath();
+  ctx.arc(0, -r * 0.35, r * 0.9, Math.PI, 0, true);
+  if (complexity > 7) {
+    ctx.lineTo(r * 0.75, r * 0.95);
+    ctx.quadraticCurveTo(0, r * 1.25, -r * 0.75, r * 0.95);
+  } else {
+    ctx.lineTo(r * 0.55, r * 0.4);
+    ctx.quadraticCurveTo(0, r * 0.65, -r * 0.55, r * 0.4);
+  }
+  ctx.closePath();
+  ctx.fill();
+  
+  // Bangs/fringe
+  ctx.beginPath();
+  ctx.moveTo(-r * 0.55, -r * 0.2);
+  ctx.quadraticCurveTo(-r * 0.2, -r * 0.05, 0, -r * 0.12);
+  ctx.quadraticCurveTo(r * 0.2, -r * 0.05, r * 0.55, -r * 0.2);
+  ctx.quadraticCurveTo(r * 0.3, r * 0.2, r * 0.12, r * 0.08);
+  ctx.quadraticCurveTo(0, r * 0.28, -r * 0.12, r * 0.08);
+  ctx.quadraticCurveTo(-r * 0.3, r * 0.2, -r * 0.55, -r * 0.2);
+  ctx.closePath();
+  ctx.fill();
+  
+  // Hair shine
+  ctx.fillStyle = hairHighlight;
+  ctx.globalAlpha = 0.5;
+  ctx.beginPath();
+  ctx.ellipse(-r * 0.2, -r * 0.6, r * 0.25, r * 0.07, -0.25, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1.0;
+  
+  // Twin tails
+  if (complexity > 4 && complexity <= 7) {
+    ctx.fillStyle = hairColor;
+    ctx.beginPath();
+    ctx.arc(-r * 0.75, r * 0.2, r * 0.28, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(r * 0.75, r * 0.2, r * 0.28, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Ribbons
+    ctx.fillStyle = `hsl(${(hue + 180) % 360}, ${sat*80}%, 50%)`;
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.8, r * 0.08);
+    ctx.lineTo(-r * 1.0, r * 0.2);
+    ctx.lineTo(-r * 0.85, r * 0.38);
+    ctx.lineTo(-r * 0.7, r * 0.2);
+    ctx.closePath();
+    ctx.fill();
+    
+    ctx.beginPath();
+    ctx.moveTo(r * 0.8, r * 0.08);
+    ctx.lineTo(r * 1.0, r * 0.2);
+    ctx.lineTo(r * 0.85, r * 0.38);
+    ctx.lineTo(r * 0.7, r * 0.2);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // 3. Face base (drawn AFTER hair so it covers hair behind)
+  const skinGrad = ctx.createRadialGradient(-r*0.25, -r*0.25, 0, 0, 0, r * 0.85);
   skinGrad.addColorStop(0, '#FFE8D6');
   skinGrad.addColorStop(0.5, '#FFD4C0');
   skinGrad.addColorStop(1, '#F0C0B0');
   ctx.fillStyle = skinGrad;
   
   ctx.beginPath();
-  ctx.moveTo(-r * 0.6, -r * 0.2);
-  ctx.bezierCurveTo(-r * 0.7, r * 0.3, -r * 0.4, r * 0.85, 0, r * 0.9);
-  ctx.bezierCurveTo(r * 0.4, r * 0.85, r * 0.7, r * 0.3, r * 0.6, -r * 0.2);
-  ctx.arc(0, -r * 0.3, r * 0.65, Math.PI, 0, true);
+  ctx.moveTo(-r * 0.55, -r * 0.15);
+  ctx.bezierCurveTo(-r * 0.65, r * 0.25, -r * 0.35, r * 0.8, 0, r * 0.85);
+  ctx.bezierCurveTo(r * 0.35, r * 0.8, r * 0.65, r * 0.25, r * 0.55, -r * 0.15);
+  ctx.arc(0, -r * 0.25, r * 0.6, Math.PI, 0, true);
   ctx.closePath();
   ctx.fill();
-
-  // 3. Hair
-  const hairColor = `hsl(${hue}, ${sat*70}%, 35%)`;
-  const hairShadow = `hsl(${hue}, ${sat*60}%, 25%)`;
-  const hairHighlight = `hsl(${hue}, ${sat*50}%, 50%)`;
-  
-  ctx.fillStyle = hairColor;
-  ctx.beginPath();
-  ctx.arc(0, -r * 0.4, r * 1.1, Math.PI, 0, true);
-  if (complexity > 7) {
-    ctx.lineTo(r * 0.85, r * 1.1);
-    ctx.quadraticCurveTo(0, r * 1.4, -r * 0.85, r * 1.1);
-  } else {
-    ctx.lineTo(r * 0.65, r * 0.5);
-    ctx.quadraticCurveTo(0, r * 0.75, -r * 0.65, r * 0.5);
-  }
-  ctx.closePath();
-  ctx.fill();
-  
-  ctx.fillStyle = hairShadow;
-  ctx.beginPath();
-  ctx.arc(0, -r * 0.4, r * 1.0, Math.PI, 0, true);
-  ctx.fill();
-  
-  ctx.fillStyle = hairColor;
-  ctx.beginPath();
-  ctx.moveTo(-r * 0.6, -r * 0.25);
-  ctx.quadraticCurveTo(-r * 0.25, -r * 0.05, 0, -r * 0.15);
-  ctx.quadraticCurveTo(r * 0.25, -r * 0.05, r * 0.6, -r * 0.25);
-  ctx.quadraticCurveTo(r * 0.35, r * 0.25, r * 0.15, r * 0.1);
-  ctx.quadraticCurveTo(0, r * 0.35, -r * 0.15, r * 0.1);
-  ctx.quadraticCurveTo(-r * 0.35, r * 0.25, -r * 0.6, -r * 0.25);
-  ctx.closePath();
-  ctx.fill();
-  
-  ctx.fillStyle = hairHighlight;
-  ctx.globalAlpha = 0.6;
-  ctx.beginPath();
-  ctx.ellipse(-r * 0.25, -r * 0.65, r * 0.3, r * 0.08, -0.3, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.globalAlpha = 1.0;
-  
-  if (complexity > 4 && complexity <= 7) {
-    ctx.fillStyle = hairColor;
-    ctx.beginPath();
-    ctx.arc(-r * 0.8, r * 0.25, r * 0.32, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(r * 0.8, r * 0.25, r * 0.32, 0, Math.PI * 2);
-    ctx.fill();
-    
-    ctx.fillStyle = `hsl(${(hue + 180) % 360}, ${sat*80}%, 45%)`;
-    ctx.beginPath();
-    ctx.moveTo(-r * 0.85, r * 0.1);
-    ctx.lineTo(-r * 1.1, r * 0.25);
-    ctx.lineTo(-r * 0.9, r * 0.45);
-    ctx.lineTo(-r * 0.75, r * 0.25);
-    ctx.closePath();
-    ctx.fill();
-    
-    ctx.beginPath();
-    ctx.moveTo(r * 0.85, r * 0.1);
-    ctx.lineTo(r * 1.1, r * 0.25);
-    ctx.lineTo(r * 0.9, r * 0.45);
-    ctx.lineTo(r * 0.75, r * 0.25);
-    ctx.closePath();
-    ctx.fill();
-  }
 
   // 4. Eyes
   const eyeColor = `hsl(${hue}, ${sat*100}%, 50%)`;
   const eyeDark = `hsl(${hue}, ${sat*100}%, 25%)`;
-  const eyeY = -r * 0.12;
-  const eyeOpen = dynamics === 'analysis' ? 0.5 : (dynamics === 'output' ? 1.1 : 1.0);
+  const eyeY = -r * 0.1;
+  const eyeOpen = dynamics === 'analysis' ? 0.5 : (dynamics === 'output' ? 1.05 : 1.0);
   
   [-1, 1].forEach(side => {
-    const ex = side * r * 0.35;
+    const ex = side * r * 0.32;
     ctx.save();
     ctx.translate(ex, eyeY);
     ctx.scale(1, eyeOpen);
     
+    // Eye white
     ctx.fillStyle = '#FFF';
     ctx.beginPath();
-    ctx.ellipse(0, 0, r * 0.26, r * 0.3, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, 0, r * 0.23, r * 0.27, 0, 0, Math.PI * 2);
     ctx.fill();
     
+    // Upper lash line
     ctx.strokeStyle = '#2a2a2a';
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth = 2.2;
     ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.moveTo(-r * 0.28, 0);
-    ctx.quadraticCurveTo(0, -r * 0.32, r * 0.28, 0);
+    ctx.moveTo(-r * 0.25, 0);
+    ctx.quadraticCurveTo(0, -r * 0.28, r * 0.25, 0);
     ctx.stroke();
     
-    const irisGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 0.23);
+    // Iris
+    const irisGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 0.2);
     irisGrad.addColorStop(0, eyeDark);
     irisGrad.addColorStop(0.5, eyeColor);
     irisGrad.addColorStop(1, `hsl(${hue}, ${sat*80}%, 35%)`);
     
     ctx.fillStyle = irisGrad;
     ctx.beginPath();
-    ctx.arc(0, 0, r * 0.23, 0, Math.PI * 2);
+    ctx.arc(0, 0, r * 0.2, 0, Math.PI * 2);
     ctx.fill();
     
+    // Pupil
     ctx.fillStyle = '#1a1a1a';
     ctx.beginPath();
-    ctx.arc(0, 0, r * 0.11, 0, Math.PI * 2);
+    ctx.arc(0, 0, r * 0.09, 0, Math.PI * 2);
     ctx.fill();
     
+    // Eye shine
     ctx.fillStyle = 'rgba(255,255,255,0.95)';
     ctx.beginPath();
-    ctx.arc(-r * 0.09, -r * 0.09, r * 0.08, 0, Math.PI * 2);
+    ctx.arc(-r * 0.07, -r * 0.07, r * 0.07, 0, Math.PI * 2);
     ctx.fill();
     
     ctx.fillStyle = 'rgba(255,255,255,0.7)';
     ctx.beginPath();
-    ctx.arc(r * 0.07, r * 0.11, r * 0.045, 0, Math.PI * 2);
+    ctx.arc(r * 0.06, r * 0.09, r * 0.04, 0, Math.PI * 2);
     ctx.fill();
     
     ctx.restore();
   });
 
   // 5. Blush
-  ctx.fillStyle = `hsla(${(hue+15) % 360}, ${sat*90}%, 75%, 0.35)`;
-  ctx.filter = 'blur(1.5px)';
+  ctx.fillStyle = `hsla(${(hue+15) % 360}, ${sat*90}%, 75%, 0.3)`;
+  ctx.filter = 'blur(1px)';
   ctx.beginPath();
-  ctx.ellipse(-r * 0.52, r * 0.22, r * 0.16, r * 0.09, -0.1, 0, Math.PI * 2);
-  ctx.ellipse(r * 0.52, r * 0.22, r * 0.16, r * 0.09, 0.1, 0, Math.PI * 2);
+  ctx.ellipse(-r * 0.48, r * 0.2, r * 0.14, r * 0.08, -0.1, 0, Math.PI * 2);
+  ctx.ellipse(r * 0.48, r * 0.2, r * 0.14, r * 0.08, 0.1, 0, Math.PI * 2);
   ctx.fill();
   ctx.filter = 'none';
 
   // 6. Mouth
   ctx.strokeStyle = '#C48B8B';
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 1.8;
   ctx.lineCap = 'round';
   ctx.beginPath();
   if (dynamics === 'output') {
-    ctx.arc(0, r * 0.42, r * 0.11, 0.1, Math.PI - 0.1);
+    ctx.arc(0, r * 0.38, r * 0.1, 0.1, Math.PI - 0.1);
   } else if (dynamics === 'idle') {
-    ctx.moveTo(-r * 0.07, r * 0.45);
-    ctx.quadraticCurveTo(0, r * 0.49, r * 0.07, r * 0.45);
+    ctx.moveTo(-r * 0.06, r * 0.41);
+    ctx.quadraticCurveTo(0, r * 0.45, r * 0.06, r * 0.41);
   } else {
-    ctx.moveTo(-r * 0.05, r * 0.45);
-    ctx.lineTo(r * 0.05, r * 0.45);
+    ctx.moveTo(-r * 0.04, r * 0.41);
+    ctx.lineTo(r * 0.04, r * 0.41);
   }
   ctx.stroke();
 
@@ -385,19 +401,23 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
 function renderCanvasFrame() {
   if (!ctx || !useAnimeMode) return;
   
+  // Clear canvas completely
   ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = '#FFFFFF'; // White background
+  ctx.fillRect(0, 0, width, height);
   
   agentsData.nodes.forEach(d => {
     if (!d.x || !d.y) return;
     
     const size = d.avatar?.size ?? 28;
+    // Draw with proper offset to ensure full face is visible
     drawAnimeFaceOnCanvas(ctx, d, d.x, d.y, size);
     
     if (showLabels) {
       ctx.fillStyle = '#64748b';
       ctx.font = '11px "IBM Plex Mono"';
       ctx.textAlign = 'center';
-      ctx.fillText(d.name, d.x, d.y + size * 2.5);
+      ctx.fillText(d.name, d.x, d.y + size * 2.8);
     }
   });
 
