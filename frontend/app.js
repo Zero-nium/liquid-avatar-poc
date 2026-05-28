@@ -204,251 +204,227 @@ function computeDynamicsTransform(agent, time) {
   return { scale, rotation, opacity };
 }
 
-// ─── HIGH-QUALITY ANIME FACE RENDERING (Canvas 2D) ───────────────────────────
-function generateAnimeTexture(agent, size) {
-  const cacheKey = `${agent.id}-anime-${agent.avatar?.base_hue}-${agent.avatar?.dynamics_state}`;
-  
-  if (avatarCache.has(cacheKey)) {
-    return avatarCache.get(cacheKey);
-  }
-
-  const w = size * 4;
-  const h = size * 4;
-  offscreenCanvas.width = w;
-  offscreenCanvas.height = h;
-  offCtx.clearRect(0, 0, w, h);
-
+// ─── CANVAS RENDERING (Direct Drawing - No ImageData) ───────────────────────
+function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   const hue = agent.avatar?.base_hue ?? 180;
   const sat = agent.avatar?.saturation ?? 0.75;
   const complexity = agent.avatar?.shape_complexity ?? 5;
   const dynamics = agent.avatar?.dynamics_state || 'idle';
   
-  const cx = w / 2;
-  const cy = h / 2;
-  const r = size * 1.5;
+  const r = size * 1.3;
+  const cx = x;
+  const cy = y;
+
+  ctx.save();
+  ctx.translate(cx, cy);
 
   // 1. Soft glow/aura
-  const glowGrad = offCtx.createRadialGradient(cx, cy, r * 0.5, cx, cy, r * 2.5);
+  const glowGrad = ctx.createRadialGradient(0, 0, r * 0.5, 0, 0, r * 2.2);
   glowGrad.addColorStop(0, `hsla(${hue}, ${sat*100}%, 60%, 0.3)`);
   glowGrad.addColorStop(1, 'transparent');
-  offCtx.fillStyle = glowGrad;
-  offCtx.beginPath();
-  offCtx.arc(cx, cy, r * 2.5, 0, Math.PI * 2);
-  offCtx.fill();
+  ctx.fillStyle = glowGrad;
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 2.2, 0, Math.PI * 2);
+  ctx.fill();
 
   // 2. Face base with soft skin gradient
-  offCtx.save();
-  offCtx.translate(cx, cy);
-  
-  const skinGrad = offCtx.createRadialGradient(-r*0.3, -r*0.3, 0, 0, 0, r);
+  const skinGrad = ctx.createRadialGradient(-r*0.3, -r*0.3, 0, 0, 0, r);
   skinGrad.addColorStop(0, '#FFE8D6');
   skinGrad.addColorStop(0.5, '#FFD4C0');
   skinGrad.addColorStop(1, '#F0C0B0');
-  offCtx.fillStyle = skinGrad;
+  ctx.fillStyle = skinGrad;
   
-  // Anime face shape (soft chin)
-  offCtx.beginPath();
-  offCtx.moveTo(-r * 0.6, -r * 0.2);
-  offCtx.bezierCurveTo(-r * 0.7, r * 0.3, -r * 0.4, r * 0.85, 0, r * 0.9);
-  offCtx.bezierCurveTo(r * 0.4, r * 0.85, r * 0.7, r * 0.3, r * 0.6, -r * 0.2);
-  offCtx.arc(0, -r * 0.3, r * 0.65, Math.PI, 0, true);
-  offCtx.closePath();
-  offCtx.fill();
-  offCtx.restore();
+  // Anime face shape
+  ctx.beginPath();
+  ctx.moveTo(-r * 0.6, -r * 0.2);
+  ctx.bezierCurveTo(-r * 0.7, r * 0.3, -r * 0.4, r * 0.85, 0, r * 0.9);
+  ctx.bezierCurveTo(r * 0.4, r * 0.85, r * 0.7, r * 0.3, r * 0.6, -r * 0.2);
+  ctx.arc(0, -r * 0.3, r * 0.65, Math.PI, 0, true);
+  ctx.closePath();
+  ctx.fill();
 
-  // 3. Hair (complexity-based styling)
+  // 3. Hair
   const hairColor = `hsl(${hue}, ${sat*70}%, 35%)`;
   const hairShadow = `hsl(${hue}, ${sat*60}%, 25%)`;
   const hairHighlight = `hsl(${hue}, ${sat*50}%, 50%)`;
   
-  offCtx.save();
-  offCtx.translate(cx, cy);
-  offCtx.fillStyle = hairColor;
-  
   // Hair back layer
-  offCtx.beginPath();
-  offCtx.arc(0, -r * 0.4, r * 1.2, Math.PI, 0, true);
+  ctx.fillStyle = hairColor;
+  ctx.beginPath();
+  ctx.arc(0, -r * 0.4, r * 1.1, Math.PI, 0, true);
   if (complexity > 7) {
-    // Long hair
-    offCtx.lineTo(r * 0.9, r * 1.2);
-    offCtx.quadraticCurveTo(0, r * 1.5, -r * 0.9, r * 1.2);
+    ctx.lineTo(r * 0.85, r * 1.1);
+    ctx.quadraticCurveTo(0, r * 1.4, -r * 0.85, r * 1.1);
   } else {
-    offCtx.lineTo(r * 0.7, r * 0.5);
-    offCtx.quadraticCurveTo(0, r * 0.8, -r * 0.7, r * 0.5);
+    ctx.lineTo(r * 0.65, r * 0.5);
+    ctx.quadraticCurveTo(0, r * 0.75, -r * 0.65, r * 0.5);
   }
-  offCtx.closePath();
-  offCtx.fill();
+  ctx.closePath();
+  ctx.fill();
   
   // Hair shadow
-  offCtx.fillStyle = hairShadow;
-  offCtx.beginPath();
-  offCtx.arc(0, -r * 0.4, r * 1.1, Math.PI, 0, true);
-  offCtx.fill();
+  ctx.fillStyle = hairShadow;
+  ctx.beginPath();
+  ctx.arc(0, -r * 0.4, r * 1.0, Math.PI, 0, true);
+  ctx.fill();
   
   // Bangs/fringe
-  offCtx.fillStyle = hairColor;
-  offCtx.beginPath();
-  offCtx.moveTo(-r * 0.65, -r * 0.3);
-  offCtx.quadraticCurveTo(-r * 0.3, -r * 0.1, 0, -r * 0.2);
-  offCtx.quadraticCurveTo(r * 0.3, -r * 0.1, r * 0.65, -r * 0.3);
-  offCtx.quadraticCurveTo(r * 0.4, r * 0.3, r * 0.2, r * 0.1);
-  offCtx.quadraticCurveTo(0, r * 0.4, -r * 0.2, r * 0.1);
-  offCtx.quadraticCurveTo(-r * 0.4, r * 0.3, -r * 0.65, -r * 0.3);
-  offCtx.closePath();
-  offCtx.fill();
+  ctx.fillStyle = hairColor;
+  ctx.beginPath();
+  ctx.moveTo(-r * 0.6, -r * 0.25);
+  ctx.quadraticCurveTo(-r * 0.25, -r * 0.05, 0, -r * 0.15);
+  ctx.quadraticCurveTo(r * 0.25, -r * 0.05, r * 0.6, -r * 0.25);
+  ctx.quadraticCurveTo(r * 0.35, r * 0.25, r * 0.15, r * 0.1);
+  ctx.quadraticCurveTo(0, r * 0.35, -r * 0.15, r * 0.1);
+  ctx.quadraticCurveTo(-r * 0.35, r * 0.25, -r * 0.6, -r * 0.25);
+  ctx.closePath();
+  ctx.fill();
   
-  // Hair shine/streaks
-  offCtx.fillStyle = hairHighlight;
-  offCtx.globalAlpha = 0.6;
-  offCtx.beginPath();
-  offCtx.ellipse(-r * 0.3, -r * 0.7, r * 0.35, r * 0.1, -0.3, 0, Math.PI * 2);
-  offCtx.fill();
-  offCtx.globalAlpha = 1.0;
+  // Hair shine
+  ctx.fillStyle = hairHighlight;
+  ctx.globalAlpha = 0.6;
+  ctx.beginPath();
+  ctx.ellipse(-r * 0.25, -r * 0.65, r * 0.3, r * 0.08, -0.3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1.0;
   
-  // Side hair/tails based on complexity
-  if (complexity <= 4) {
-    // Short hair - minimal
-  } else if (complexity <= 7) {
-    // Twin tails
-    offCtx.fillStyle = hairColor;
+  // Twin tails if complexity > 4
+  if (complexity > 4 && complexity <= 7) {
+    ctx.fillStyle = hairColor;
     // Left tail
-    offCtx.beginPath();
-    offCtx.arc(-r * 0.85, r * 0.3, r * 0.35, 0, Math.PI * 2);
-    offCtx.fill();
+    ctx.beginPath();
+    ctx.arc(-r * 0.8, r * 0.25, r * 0.32, 0, Math.PI * 2);
+    ctx.fill();
     // Right tail
-    offCtx.beginPath();
-    offCtx.arc(r * 0.85, r * 0.3, r * 0.35, 0, Math.PI * 2);
-    offCtx.fill();
+    ctx.beginPath();
+    ctx.arc(r * 0.8, r * 0.25, r * 0.32, 0, Math.PI * 2);
+    ctx.fill();
     
     // Ribbons
-    offCtx.fillStyle = `hsl(${(hue + 180) % 360}, ${sat*80}%, 45%)`;
-    offCtx.beginPath();
-    offCtx.moveTo(-r * 0.9, r * 0.1);
-    offCtx.lineTo(-r * 1.2, r * 0.3);
-    offCtx.lineTo(-r * 0.95, r * 0.5);
-    offCtx.lineTo(-r * 0.8, r * 0.3);
-    offCtx.closePath();
-    offCtx.fill();
+    ctx.fillStyle = `hsl(${(hue + 180) % 360}, ${sat*80}%, 45%)`;
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.85, r * 0.1);
+    ctx.lineTo(-r * 1.1, r * 0.25);
+    ctx.lineTo(-r * 0.9, r * 0.45);
+    ctx.lineTo(-r * 0.75, r * 0.25);
+    ctx.closePath();
+    ctx.fill();
     
-    offCtx.beginPath();
-    offCtx.moveTo(r * 0.9, r * 0.1);
-    offCtx.lineTo(r * 1.2, r * 0.3);
-    offCtx.lineTo(r * 0.95, r * 0.5);
-    offCtx.lineTo(r * 0.8, r * 0.3);
-    offCtx.closePath();
-    offCtx.fill();
+    ctx.beginPath();
+    ctx.moveTo(r * 0.85, r * 0.1);
+    ctx.lineTo(r * 1.1, r * 0.25);
+    ctx.lineTo(r * 0.9, r * 0.45);
+    ctx.lineTo(r * 0.75, r * 0.25);
+    ctx.closePath();
+    ctx.fill();
   }
-  
-  offCtx.restore();
 
-  // 4. Eyes (detailed with gradients)
+  // 4. Eyes
   const eyeColor = `hsl(${hue}, ${sat*100}%, 50%)`;
   const eyeDark = `hsl(${hue}, ${sat*100}%, 25%)`;
-  const eyeY = -r * 0.15;
+  const eyeY = -r * 0.12;
   const eyeOpen = dynamics === 'analysis' ? 0.5 : (dynamics === 'output' ? 1.1 : 1.0);
   
   [-1, 1].forEach(side => {
-    const ex = side * r * 0.38;
-    offCtx.save();
-    offCtx.translate(ex, eyeY);
-    offCtx.scale(1, eyeOpen);
+    const ex = side * r * 0.35;
+    ctx.save();
+    ctx.translate(ex, eyeY);
+    ctx.scale(1, eyeOpen);
     
     // Eye white
-    offCtx.fillStyle = '#FFF';
-    offCtx.beginPath();
-    offCtx.ellipse(0, 0, r * 0.28, r * 0.32, 0, 0, Math.PI * 2);
-    offCtx.fill();
+    ctx.fillStyle = '#FFF';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * 0.26, r * 0.3, 0, 0, Math.PI * 2);
+    ctx.fill();
     
     // Upper lash line
-    offCtx.strokeStyle = '#2a2a2a';
-    offCtx.lineWidth = 3;
-    offCtx.lineCap = 'round';
-    offCtx.beginPath();
-    offCtx.moveTo(-r * 0.3, 0);
-    offCtx.quadraticCurveTo(0, -r * 0.35, r * 0.3, 0);
-    offCtx.stroke();
+    ctx.strokeStyle = '#2a2a2a';
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.28, 0);
+    ctx.quadraticCurveTo(0, -r * 0.32, r * 0.28, 0);
+    ctx.stroke();
     
-    // Iris gradient
-    const irisGrad = offCtx.createRadialGradient(0, 0, 0, 0, 0, r * 0.25);
+    // Iris
+    const irisGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 0.23);
     irisGrad.addColorStop(0, eyeDark);
     irisGrad.addColorStop(0.5, eyeColor);
     irisGrad.addColorStop(1, `hsl(${hue}, ${sat*80}%, 35%)`);
     
-    offCtx.fillStyle = irisGrad;
-    offCtx.beginPath();
-    offCtx.arc(0, 0, r * 0.25, 0, Math.PI * 2);
-    offCtx.fill();
+    ctx.fillStyle = irisGrad;
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.23, 0, Math.PI * 2);
+    ctx.fill();
     
     // Pupil
-    offCtx.fillStyle = '#1a1a1a';
-    offCtx.beginPath();
-    offCtx.arc(0, 0, r * 0.12, 0, Math.PI * 2);
-    offCtx.fill();
+    ctx.fillStyle = '#1a1a1a';
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.11, 0, Math.PI * 2);
+    ctx.fill();
     
-    // Eye shine (multiple highlights)
-    offCtx.fillStyle = 'rgba(255,255,255,0.95)';
-    offCtx.beginPath();
-    offCtx.arc(-r * 0.1, -r * 0.1, r * 0.09, 0, Math.PI * 2);
-    offCtx.fill();
+    // Eye shine
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.beginPath();
+    ctx.arc(-r * 0.09, -r * 0.09, r * 0.08, 0, Math.PI * 2);
+    ctx.fill();
     
-    offCtx.fillStyle = 'rgba(255,255,255,0.7)';
-    offCtx.beginPath();
-    offCtx.arc(r * 0.08, r * 0.12, r * 0.05, 0, Math.PI * 2);
-    offCtx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.beginPath();
+    ctx.arc(r * 0.07, r * 0.11, r * 0.045, 0, Math.PI * 2);
+    ctx.fill();
     
-    offCtx.fillStyle = 'rgba(255,255,255,0.5)';
-    offCtx.beginPath();
-    offCtx.arc(-r * 0.05, r * 0.15, r * 0.03, 0, Math.PI * 2);
-    offCtx.fill();
-    
-    // Lower lash hint
-    offCtx.strokeStyle = 'rgba(0,0,0,0.2)';
-    offCtx.lineWidth = 1.5;
-    offCtx.beginPath();
-    offCtx.moveTo(-r * 0.2, r * 0.25);
-    offCtx.quadraticCurveTo(0, r * 0.32, r * 0.2, r * 0.25);
-    offCtx.stroke();
-    
-    offCtx.restore();
+    ctx.restore();
   });
 
   // 5. Blush
-  offCtx.fillStyle = `hsla(${(hue+15) % 360}, ${sat*90}%, 75%, 0.35)`;
-  offCtx.filter = 'blur(2px)';
-  offCtx.beginPath();
-  offCtx.ellipse(-r * 0.55, r * 0.25, r * 0.18, r * 0.1, -0.1, 0, Math.PI * 2);
-  offCtx.ellipse(r * 0.55, r * 0.25, r * 0.18, r * 0.1, 0.1, 0, Math.PI * 2);
-  offCtx.fill();
-  offCtx.filter = 'none';
+  ctx.fillStyle = `hsla(${(hue+15) % 360}, ${sat*90}%, 75%, 0.35)`;
+  ctx.filter = 'blur(1.5px)';
+  ctx.beginPath();
+  ctx.ellipse(-r * 0.52, r * 0.22, r * 0.16, r * 0.09, -0.1, 0, Math.PI * 2);
+  ctx.ellipse(r * 0.52, r * 0.22, r * 0.16, r * 0.09, 0.1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.filter = 'none';
 
-  // 6. Mouth (expression-based)
-  offCtx.strokeStyle = '#C48B8B';
-  offCtx.lineWidth = 2.5;
-  offCtx.lineCap = 'round';
-  offCtx.beginPath();
+  // 6. Mouth
+  ctx.strokeStyle = '#C48B8B';
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
   if (dynamics === 'output') {
-    // Happy smile
-    offCtx.arc(0, r * 0.45, r * 0.12, 0.1, Math.PI - 0.1);
+    ctx.arc(0, r * 0.42, r * 0.11, 0.1, Math.PI - 0.1);
   } else if (dynamics === 'idle') {
-    // Soft smile
-    offCtx.moveTo(-r * 0.08, r * 0.48);
-    offCtx.quadraticCurveTo(0, r * 0.52, r * 0.08, r * 0.48);
+    ctx.moveTo(-r * 0.07, r * 0.45);
+    ctx.quadraticCurveTo(0, r * 0.49, r * 0.07, r * 0.45);
   } else {
-    // Neutral
-    offCtx.moveTo(-r * 0.06, r * 0.48);
-    offCtx.lineTo(r * 0.06, r * 0.48);
+    ctx.moveTo(-r * 0.05, r * 0.45);
+    ctx.lineTo(r * 0.05, r * 0.45);
   }
-  offCtx.stroke();
+  ctx.stroke();
 
-  // 7. Nose (subtle)
-  offCtx.fillStyle = 'rgba(200,150,150,0.3)';
-  offCtx.beginPath();
-  offCtx.ellipse(0, r * 0.15, r * 0.04, r * 0.06, 0, 0, Math.PI * 2);
-  offCtx.fill();
+  ctx.restore();
+}
 
-  const texture = offCtx.getImageData(0, 0, w, h);
-  avatarCache.set(cacheKey, texture);
-  return texture;
+function renderCanvasFrame() {
+  if (!ctx || !useAnimeMode) return;
+  
+  ctx.clearRect(0, 0, width, height);
+  
+  agentsData.nodes.forEach(d => {
+    if (!d.x || !d.y) return;
+    
+    const size = d.avatar?.size ?? 28;
+    drawAnimeFaceOnCanvas(ctx, d, d.x, d.y, size);
+    
+    if (showLabels) {
+      ctx.fillStyle = '#64748b';
+      ctx.font = '11px "IBM Plex Mono"';
+      ctx.textAlign = 'center';
+      ctx.fillText(d.name, d.x, d.y + size * 2.5);
+    }
+  });
+
+  animationFrame = requestAnimationFrame(renderCanvasFrame);
 }
 
 // ─── SVG RENDERING (Geometric - Fallback) ────────────────────────────────────
