@@ -14,13 +14,11 @@ let selectedAgent = null;
 let showLabels = false;
 let animationFrame;
 let showConnections = true;
+let width, height;
 
 // ─── RENDER MODE STATE ───────────────────────────────────────────────────────
 let useAnimeMode = false; // DEFAULT TO FALSE (geometric SVG)
 let canvas, ctx;
-const avatarCache = new Map();
-const offscreenCanvas = document.createElement('canvas');
-const offCtx = offscreenCanvas.getContext('2d');
 
 // ─── CONNECTION FILTERS ──────────────────────────────────────────────────────
 const connectionFilters = {
@@ -74,7 +72,6 @@ function handleSwarmUpdate(msg) {
 
 function handleBeaconUpdate(data) {
   const agentId = data.agent_id;
-  avatarCache.delete(agentId); // Clear cache for updated agent
   
   if (!useAnimeMode) {
     const nodeSelection = svg.selectAll('.agent-node').filter(d => d.id === agentId);
@@ -93,17 +90,13 @@ async function loadSwarmData() {
     const newData = await res.json();
     
     agentsData = newData;
-    avatarCache.clear();
     
     if (simulation) {
       simulation.nodes(agentsData.nodes);
       simulation.force('link').links(agentsData.edges);
       simulation.alpha(1).restart();
 
-      if (useAnimeMode) {
-        // Canvas mode - just restart animation loop
-      } else {
-        // SVG mode - re-render nodes
+      if (!useAnimeMode) {
         node = node.data(agentsData.nodes, d => d.id).join('g')
           .attr('class', 'agent-node')
           .call(renderAvatar)
@@ -204,7 +197,7 @@ function computeDynamicsTransform(agent, time) {
   return { scale, rotation, opacity };
 }
 
-// ─── CANVAS RENDERING (Direct Drawing - No ImageData) ───────────────────────
+// ─── CANVAS RENDERING (Direct Drawing - High Quality Anime) ─────────────────
 function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   const hue = agent.avatar?.base_hue ?? 180;
   const sat = agent.avatar?.saturation ?? 0.75;
@@ -212,11 +205,9 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   const dynamics = agent.avatar?.dynamics_state || 'idle';
   
   const r = size * 1.3;
-  const cx = x;
-  const cy = y;
 
   ctx.save();
-  ctx.translate(cx, cy);
+  ctx.translate(x, y);
 
   // 1. Soft glow/aura
   const glowGrad = ctx.createRadialGradient(0, 0, r * 0.5, 0, 0, r * 2.2);
@@ -234,7 +225,6 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   skinGrad.addColorStop(1, '#F0C0B0');
   ctx.fillStyle = skinGrad;
   
-  // Anime face shape
   ctx.beginPath();
   ctx.moveTo(-r * 0.6, -r * 0.2);
   ctx.bezierCurveTo(-r * 0.7, r * 0.3, -r * 0.4, r * 0.85, 0, r * 0.9);
@@ -248,7 +238,6 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   const hairShadow = `hsl(${hue}, ${sat*60}%, 25%)`;
   const hairHighlight = `hsl(${hue}, ${sat*50}%, 50%)`;
   
-  // Hair back layer
   ctx.fillStyle = hairColor;
   ctx.beginPath();
   ctx.arc(0, -r * 0.4, r * 1.1, Math.PI, 0, true);
@@ -262,13 +251,11 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   ctx.closePath();
   ctx.fill();
   
-  // Hair shadow
   ctx.fillStyle = hairShadow;
   ctx.beginPath();
   ctx.arc(0, -r * 0.4, r * 1.0, Math.PI, 0, true);
   ctx.fill();
   
-  // Bangs/fringe
   ctx.fillStyle = hairColor;
   ctx.beginPath();
   ctx.moveTo(-r * 0.6, -r * 0.25);
@@ -280,7 +267,6 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   ctx.closePath();
   ctx.fill();
   
-  // Hair shine
   ctx.fillStyle = hairHighlight;
   ctx.globalAlpha = 0.6;
   ctx.beginPath();
@@ -288,19 +274,15 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   ctx.fill();
   ctx.globalAlpha = 1.0;
   
-  // Twin tails if complexity > 4
   if (complexity > 4 && complexity <= 7) {
     ctx.fillStyle = hairColor;
-    // Left tail
     ctx.beginPath();
     ctx.arc(-r * 0.8, r * 0.25, r * 0.32, 0, Math.PI * 2);
     ctx.fill();
-    // Right tail
     ctx.beginPath();
     ctx.arc(r * 0.8, r * 0.25, r * 0.32, 0, Math.PI * 2);
     ctx.fill();
     
-    // Ribbons
     ctx.fillStyle = `hsl(${(hue + 180) % 360}, ${sat*80}%, 45%)`;
     ctx.beginPath();
     ctx.moveTo(-r * 0.85, r * 0.1);
@@ -331,13 +313,11 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
     ctx.translate(ex, eyeY);
     ctx.scale(1, eyeOpen);
     
-    // Eye white
     ctx.fillStyle = '#FFF';
     ctx.beginPath();
     ctx.ellipse(0, 0, r * 0.26, r * 0.3, 0, 0, Math.PI * 2);
     ctx.fill();
     
-    // Upper lash line
     ctx.strokeStyle = '#2a2a2a';
     ctx.lineWidth = 2.5;
     ctx.lineCap = 'round';
@@ -346,7 +326,6 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
     ctx.quadraticCurveTo(0, -r * 0.32, r * 0.28, 0);
     ctx.stroke();
     
-    // Iris
     const irisGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 0.23);
     irisGrad.addColorStop(0, eyeDark);
     irisGrad.addColorStop(0.5, eyeColor);
@@ -357,13 +336,11 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
     ctx.arc(0, 0, r * 0.23, 0, Math.PI * 2);
     ctx.fill();
     
-    // Pupil
     ctx.fillStyle = '#1a1a1a';
     ctx.beginPath();
     ctx.arc(0, 0, r * 0.11, 0, Math.PI * 2);
     ctx.fill();
     
-    // Eye shine
     ctx.fillStyle = 'rgba(255,255,255,0.95)';
     ctx.beginPath();
     ctx.arc(-r * 0.09, -r * 0.09, r * 0.08, 0, Math.PI * 2);
@@ -555,46 +532,17 @@ function renderAvatar(selection) {
   });
 }
 
-// ─── CANVAS RENDER LOOP ──────────────────────────────────────────────────────
-function renderCanvasFrame() {
-  if (!ctx || !useAnimeMode) return;
-  
-  ctx.clearRect(0, 0, width, height);
-  
-  agentsData.nodes.forEach(d => {
-    if (!d.x || !d.y) return;
-    
-    const size = d.avatar?.size ?? 25;
-    const texture = generateAnimeTexture(d, size);
-    
-    ctx.putImageData(texture, d.x - texture.width/2, d.y - texture.height/2);
-    
-    if (showLabels) {
-      ctx.fillStyle = '#64748b';
-      ctx.font = '11px "IBM Plex Mono"';
-      ctx.textAlign = 'center';
-      ctx.fillText(d.name, d.x, d.y + size * 2.2);
-    }
-  });
-
-  animationFrame = requestAnimationFrame(renderCanvasFrame);
-}
-
 // ─── INITIALIZATION ───────────────────────────────────────────────────────────
-let width, height;
-
 async function init() {
   const container = document.getElementById('canvas-container');
   width = container.clientWidth;
   height = container.clientHeight;
 
-  // Setup Canvas (for anime mode)
   canvas = document.getElementById('swarm-canvas');
   canvas.width = width;
   canvas.height = height;
   ctx = canvas.getContext('2d');
   
-  // Setup SVG (for geometric mode and links)
   svg = d3.select('#swarm-svg')
     .attr('width', width)
     .attr('height', height)
@@ -604,10 +552,6 @@ async function init() {
     .scaleExtent([0.1, 4])
     .on('zoom', (e) => {
       g.attr('transform', e.transform);
-      if (useAnimeMode && ctx) {
-        // For canvas, we'd need to redraw with transform
-        // Simplified: just let D3 update positions
-      }
     });
 
   d3.select('#swarm-canvas').call(zoom);
@@ -628,11 +572,6 @@ async function init() {
     renderDynamicsLegend();
     updateStats();
     setupSimulation(width, height);
-    
-    // Start canvas loop if in anime mode
-    if (useAnimeMode) {
-      renderCanvasFrame();
-    }
     
     connectSwarmWebSocket();
     initConnectionToggles();
@@ -669,7 +608,6 @@ function setupSimulation(w, h) {
       return Math.min(w, h) * 0.3 * pos.radius;
     }, w / 2, h / 2).strength(0.1));
 
-  // SVG Links (always rendered)
   link = g.append('g')
     .attr('class', 'connection-lines')
     .selectAll('line')
@@ -693,7 +631,6 @@ function setupSimulation(w, h) {
     }[d.type] || '4,4'));
 
   if (!useAnimeMode) {
-    // SVG Nodes
     node = g.append('g')
       .selectAll('g')
       .data(agentsData.nodes)
@@ -709,7 +646,6 @@ function setupSimulation(w, h) {
       .on('mouseover', (e, d) => showTooltip(e, d))
       .on('mouseout', hideTooltip);
   } else {
-    // Canvas click handling
     canvas.addEventListener('click', (e) => {
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
@@ -753,11 +689,9 @@ function updateAnimeToggleUI() {
     if (useAnimeMode) {
       btn.style.background = 'var(--accent)';
       btn.style.color = 'white';
-      btn.textContent = 'ANIME';
     } else {
       btn.style.background = 'transparent';
       btn.style.color = 'var(--text-primary)';
-      btn.textContent = 'ANIME';
     }
   }
 }
@@ -765,19 +699,15 @@ function updateAnimeToggleUI() {
 function toggleAnimeMode() {
   useAnimeMode = !useAnimeMode;
   localStorage.setItem('liquid_anime_mode', useAnimeMode);
-  avatarCache.clear();
   
-  updateAnimeToggleUI(); // This function must be defined above
+  updateAnimeToggleUI();
   
-  // Switch rendering modes
   if (useAnimeMode) {
-    // Hide SVG nodes, show canvas
     d3.selectAll('.agent-node').remove();
     canvas.style.display = 'block';
     if (animationFrame) cancelAnimationFrame(animationFrame);
     renderCanvasFrame();
   } else {
-    // Hide canvas, show SVG nodes
     canvas.style.display = 'none';
     if (animationFrame) cancelAnimationFrame(animationFrame);
     
@@ -807,9 +737,7 @@ function toggleLabels() {
   }
 }
 
-function resetZoom() {
-  // Implement zoom reset if needed
-}
+function resetZoom() {}
 
 function refreshData() {
   loadSwarmData();
@@ -953,9 +881,7 @@ function renderDynamicsLegend() {
   `).join('');
 }
 
-function initConnectionToggles() {
-  // Implementation...
-}
+function initConnectionToggles() {}
 
 function toggleConnection(checkbox) {
   const type = checkbox.dataset.conn;
