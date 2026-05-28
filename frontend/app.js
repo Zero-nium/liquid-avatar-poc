@@ -783,21 +783,6 @@ function toggleAnimeMode() {
   }
 }
 
-function updateAnimeToggleUI() {
-  const btn = document.getElementById('anime-toggle');
-  if (btn) {
-    if (useAnimeMode) {
-      btn.style.background = 'var(--accent)';
-      btn.style.color = 'white';
-      btn.textContent = 'ANIME';
-    } else {
-      btn.style.background = 'transparent';
-      btn.style.color = 'var(--text-primary)';
-      btn.textContent = 'ANIME';
-    }
-  }
-}
-
 function toggleLabels() {
   showLabels = !showLabels;
   if (useAnimeMode) {
