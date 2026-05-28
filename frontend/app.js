@@ -1,6 +1,6 @@
 /**
 Liquid Avatar — Swarm Visualization Engine v1.2
-D3.js force-directed graph with SVG rendering
+D3.js force-directed graph + Pixi.js WebGL rendering
 Implements Council feedback: Schema v1.2 shapes, blur/vibration/permanence, connector toggles
 */
 const API_BASE = window.location.origin.includes('localhost')
@@ -16,13 +16,24 @@ let showLabels = false;
 let animationFrame;
 let showConnections = true;
 
+// ─── PIXI.JS STATE ───────────────────────────────────────────────────────────
+let pixiApp;
+let pixiContainer;
+let pixiLinks;
+const avatarTextures = {};
+let usePixi = true; // Toggle between D3 SVG and Pixi WebGL
+
 // ─── ANIME MODE STATE ──────────────────────────────────────────────────────
 let animeMode = localStorage.getItem('liquid_anime_mode') === 'true';
 
 function toggleAnimeMode() {
   animeMode = !animeMode;
   localStorage.setItem('liquid_anime_mode', animeMode);
-  node.call(animeMode ? renderAnimeAvatar : renderAvatar);
+  if (usePixi) {
+    rebuildPixiSprites();
+  } else {
+    node.call(animeMode ? renderAnimeAvatar : renderAvatar);
+  }
   updateAnimeToggleUI();
 }
 
@@ -51,7 +62,6 @@ function connectSwarmWebSocket() {
   const wsUrl = `${protocol}//${window.location.host}/ws/swarm`;
   
   swarmSocket = new WebSocket(wsUrl);
-
   swarmSocket.onopen = () => console.log('🔌 WebSocket connected to swarm');
   
   swarmSocket.onmessage = (event) => {
@@ -88,12 +98,19 @@ function handleSwarmUpdate(msg) {
 
 function handleBeaconUpdate(data) {
   const agentId = data.agent_id;
-  const nodeSelection = svg.selectAll('.agent-node').filter(d => d.id === agentId);
-  
-  if (!nodeSelection.empty()) {
-    const agentData = nodeSelection.data()[0];
-    agentData.last_beacon = data.timestamp;
-    renderAvatar(nodeSelection);
+  if (usePixi) {
+    const sprite = agentsData.nodes.find(n => n.id === agentId)?.sprite;
+    if (sprite) {
+      sprite.alpha = 0.5;
+      setTimeout(() => { sprite.alpha = 1.0; }, 300);
+    }
+  } else {
+    const nodeSelection = svg.selectAll('.agent-node').filter(d => d.id === agentId);
+    if (!nodeSelection.empty()) {
+      const agentData = nodeSelection.data()[0];
+      agentData.last_beacon = data.timestamp;
+      renderAvatar(nodeSelection);
+    }
   }
 }
 
@@ -110,18 +127,18 @@ async function loadSwarmData() {
       simulation.force('link').links(agentsData.edges);
       simulation.alpha(1).restart();
 
-      // Inside loadSwarmData(), replace the link data join with:
+      // Update D3 links (keep for SVG mode)
       link = link.data(agentsData.edges, d => `${d.source.id || d.source}-${d.target.id || d.target}`).join('line')
         .attr('class', d => `connection-line conn-${d.type || 'cluster_peer'}`)
         .attr('display', d => connectionFilters[d.type || 'cluster_peer'] ? 'inline' : 'none')
         .attr('stroke', d => ({
-          initialized: '#64748b',      // Slate gray (instead of #475569)
-          cluster_peer: '#94a3b8',     // Lighter slate (instead of #cbd5e1)
-          beacon_interaction: '#10b981', // Keep green
-          metadata_match: '#8b5cf6'    // Keep purple
+          initialized: '#64748b',
+          cluster_peer: '#94a3b8',
+          beacon_interaction: '#10b981',
+          metadata_match: '#8b5cf6'
         }[d.type] || '#94a3b8'))
-        .attr('stroke-opacity', d => d.type === 'cluster_peer' ? 0.4 : 0.7)  // Slightly more opacity
-        .attr('stroke-width', d => d.type === 'initialized' ? 1.2 : 1)       // Thinner lines
+        .attr('stroke-opacity', d => d.type === 'cluster_peer' ? 0.4 : 0.7)
+        .attr('stroke-width', d => d.type === 'initialized' ? 1.2 : 1)
         .attr('stroke-dasharray', d => ({
           initialized: 'none',
           cluster_peer: '4,4',
@@ -129,19 +146,25 @@ async function loadSwarmData() {
           metadata_match: '6,2,2,2'
         }[d.type] || '4,4'));
 
-      node = node.data(agentsData.nodes, d => d.id).join('g')
-        .attr('class', 'agent-node')
-        .call(renderAvatar)
-        .call(d3.drag()
-          .on('start', dragstarted)
-          .on('drag', dragged)
-          .on('end', dragended));
+      if (!usePixi) {
+        node = node.data(agentsData.nodes, d => d.id).join('g')
+          .attr('class', 'agent-node')
+          .call(renderAvatar)
+          .call(d3.drag()
+            .on('start', dragstarted)
+            .on('drag', dragged)
+            .on('end', dragended));
 
-      node.on('click', (e, d) => selectAgent(d))
-        .on('mouseover', (e, d) => showTooltip(e, d))
-        .on('mouseout', hideTooltip);
+        node.on('click', (e, d) => selectAgent(d))
+          .on('mouseover', (e, d) => showTooltip(e, d))
+          .on('mouseout', hideTooltip);
+      }
 
       updateStats();
+      
+      if (usePixi) {
+        rebuildPixiSprites();
+      }
     }
   } catch (err) {
     console.error('Failed to load swarm data:', err);
@@ -177,7 +200,6 @@ function generatePolygon(cx, cy, r, sides, rotation = 0, vibration = 0) {
   const points = [];
   for (let i = 0; i < sides; i++) {
     const angle = (i * 2 * Math.PI / sides) + rotation - Math.PI / 2;
-    // Schema v1.2: Vertex Vibration for architects
     const vibOffset = vibration * Math.sin(Date.now() * 0.005 + i);
     points.push([cx + (r + vibOffset) * Math.cos(angle), cy + (r + vibOffset) * Math.sin(angle)]);
   }
@@ -206,9 +228,8 @@ function computeDynamicsTransform(agent, time) {
 
   switch (dynamics) {
     case 'idle':
-      // Schema v1.2: Static Permanence for chroniclers (no breathing)
       if (agent.role === 'chronicler' || agent.role === 'chronicle') {
-        opacity = 0.85; // Steady luminosity
+        opacity = 0.85;
       } else {
         opacity = 0.4 + 0.2 * Math.sin(state.phase + time * state.speed);
       }
@@ -230,35 +251,170 @@ function computeDynamicsTransform(agent, time) {
   return { scale, rotation, opacity };
 }
 
-// ─── RENDERING ────────────────────────────────────────────────────────────────
+// ─── PIXI.JS TEXTURE GENERATION ──────────────────────────────────────────────
+function getAvatarTexture(agent) {
+  const isDiscovered = agent.cluster?.startsWith('discovered_via_');
+  const id = `${agent.id}-${agent.avatar?.base_hue}-${agent.avatar?.dynamics_state}-${isDiscovered}`;
+  
+  if (avatarTextures[id]) return avatarTextures[id];
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+
+  if (isDiscovered) {
+    // Draw placeholder pentagon
+    ctx.fillStyle = '#cbd5e1';
+    ctx.strokeStyle = '#94a3b8';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const angle = (i * 2 * Math.PI / 5) - Math.PI / 2;
+      const x = 32 + 26 * Math.cos(angle);
+      const y = 32 + 26 * Math.sin(angle);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  } else if (animeMode) {
+    drawVTuberFace(ctx, agent);
+  } else {
+    drawGeometricAvatar(ctx, agent);
+  }
+
+  const texture = PIXI.Texture.from(canvas);
+  avatarTextures[id] = texture;
+  return texture;
+}
+
+function drawVTuberFace(ctx, agent) {
+  const hue = agent.avatar?.base_hue ?? 180;
+  const sat = agent.avatar?.saturation ?? 0.75;
+  const dynamics = agent.avatar?.dynamics_state || 'idle';
+  
+  // Skin
+  ctx.fillStyle = '#FFDFD3';
+  ctx.beginPath();
+  ctx.arc(32, 32, 28, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Eyes
+  const eyeOpen = dynamics === 'analysis' ? 3 : 7;
+  const eyeColor = `hsl(${hue}, ${sat * 100}%, 45%)`;
+  ctx.fillStyle = eyeColor;
+  ctx.beginPath();
+  ctx.ellipse(20, 28, 5, eyeOpen, 0, 0, Math.PI * 2);
+  ctx.ellipse(44, 28, 5, eyeOpen, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Highlights
+  ctx.fillStyle = 'white';
+  ctx.beginPath();
+  ctx.arc(18, 26, 2.5, 0, Math.PI * 2);
+  ctx.arc(42, 26, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Mouth
+  ctx.strokeStyle = '#D6A5A5';
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.arc(32, 38, 5, 0, Math.PI, false);
+  ctx.stroke();
+  
+  // Hair
+  ctx.fillStyle = `hsl(${hue}, ${sat * 60}%, 30%)`;
+  ctx.beginPath();
+  ctx.moveTo(4, 32);
+  ctx.bezierCurveTo(10, 8, 54, 8, 60, 32);
+  ctx.lineTo(60, 8);
+  ctx.lineTo(4, 8);
+  ctx.fill();
+}
+
+function drawGeometricAvatar(ctx, agent) {
+  const hue = agent.avatar?.base_hue ?? 180;
+  const sat = Math.round((agent.avatar?.saturation ?? 0.8) * 100);
+  const sides = agent.avatar?.shape_complexity ?? 6;
+  const color = hslToHex(hue, sat, 55);
+  
+  ctx.fillStyle = color;
+  ctx.strokeStyle = hslToHex(hue, sat, 70);
+  ctx.lineWidth = 2;
+  
+  ctx.beginPath();
+  for (let i = 0; i < sides; i++) {
+    const angle = (i * 2 * Math.PI / sides) - Math.PI / 2;
+    const x = 32 + 26 * Math.cos(angle);
+    const y = 32 + 26 * Math.sin(angle);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+}
+
+function rebuildPixiSprites() {
+  if (!pixiContainer) return;
+  
+  // Clear existing sprites
+  pixiContainer.removeChildren();
+  
+  // Rebuild sprites
+  agentsData.nodes.forEach(d => {
+    const texture = getAvatarTexture(d);
+    const sprite = new PIXI.Sprite(texture);
+    sprite.anchor.set(0.5);
+    sprite.x = d.x || 400;
+    sprite.y = d.y || 400;
+    sprite.eventMode = 'static';
+    sprite.cursor = 'pointer';
+    sprite.on('pointerover', () => {
+      sprite.scale.set(1.15);
+      showTooltip({ pageX: sprite.x + 200, pageY: sprite.y + 100 }, d);
+    });
+    sprite.on('pointerout', () => {
+      sprite.scale.set(1.0);
+      hideTooltip();
+    });
+    sprite.on('click', () => selectAgent(d));
+    
+    pixiContainer.addChild(sprite);
+    d.sprite = sprite;
+  });
+}
+
+// ─── RENDERING (SVG - Fallback) ───────────────────────────────────────────────
 function renderAvatar(selection) {
   selection.each(function(d) {
     const el = d3.select(this);
     el.selectAll('*').remove();
 
-    // ─── DETECT UNREGISTERED AGENTS ──────────────────────────────────────
     const isDiscovered = d.cluster && d.cluster.startsWith('discovered_via_');
     
     let color, glow, strokeDasharray, opacity;
     
     if (isDiscovered) {
-      color = '#cbd5e1';      // Light gray
-      glow = '#94a3b8';       // Slate gray
-      strokeDasharray = '4,4'; // Dashed border
-      opacity = 0.4;          // Dimmed
+      color = '#cbd5e1';
+      glow = '#94a3b8';
+      strokeDasharray = '4,4';
+      opacity = 0.4;
     } else {
       color = getAgentColor(d);
       glow = getAgentGlow(d);
       strokeDasharray = 'none';
       opacity = 0.9;
     }
-    // ────────────────────────────────────────────────────────────────────
 
     const size = d.avatar?.size ?? 20;
     const sides = isDiscovered ? 5 : (d.avatar?.shape_complexity ?? 6);
     const isCircle = sides >= 20;
 
-    // Blur Factor
     const hoursSinceReport = d.last_reported 
       ? (Date.now() - new Date(d.last_reported).getTime()) / 3600000 
       : 0;
@@ -273,7 +429,6 @@ function renderAvatar(selection) {
       el.append('circle').attr('r', size * 1.2).attr('fill', glow).attr('opacity', 0.15).attr('class', 'glow-inner');
     }
 
-    // Main shape
     if (isCircle) {
       el.append('circle')
         .attr('r', size)
@@ -323,7 +478,6 @@ function renderAvatar(selection) {
       }
     }
 
-    // Labels
     if (showLabels) {
       el.append('text')
         .attr('dy', size + 16)
@@ -336,7 +490,6 @@ function renderAvatar(selection) {
         .text(d.name);
     }
     
-    // Beacon pulse (skip for discovered)
     if (d.last_beacon && !isDiscovered) {
       const age = (Date.now() - new Date(d.last_beacon).getTime()) / 1000;
       if (age < 300) {
@@ -346,26 +499,161 @@ function renderAvatar(selection) {
       }
     }
     
-    // Tooltip for discovered agents
     if (isDiscovered) {
       el.append('title').text(`${d.name}\nDiscovered via ${d.cluster.replace('discovered_via_', '')}\nClick to view details`);
     }
 
-    // In renderAvatar(), after drawing main shape:
     if (d.cluster === 'discovered_via_ethoswarm') {
-      // Subtle pulse ring for blockchain-active agents
       el.append('circle')
         .attr('r', size * 1.3)
         .attr('fill', 'none')
-        .attr('stroke', '#a78bfa')  // Purple accent
+        .attr('stroke', '#a78bfa')
         .attr('stroke-width', 1)
         .attr('opacity', 0.3)
         .attr('class', 'ethoswarm-pulse')
         .attr('stroke-dasharray', '2,4');
-      // Tooltip
       el.append('title').text(`${d.name}\nEthoswarm Agent\nOn-chain: ${d.metadata?.on_chain_id?.slice(0,10)}...`);
     }
   });
+}
+
+function renderAnimeAvatar(selection) {
+  selection.each(function(d) {
+    const el = d3.select(this);
+    el.selectAll('*').remove();
+
+    const schema = d.avatar || {};
+    const hue = schema.base_hue ?? 180;
+    const sat = Math.round((schema.saturation ?? 0.75) * 100);
+    const complexity = schema.shape_complexity ?? 5;
+    const pulse = schema.pulse_rate ?? 2.0;
+    const dynamics = d.avatar?.dynamics_state || 'idle';
+    const role = d.role || 'general';
+    const size = schema.size ?? 28;
+    const isDiscovered = d.cluster?.startsWith('discovered_via_');
+
+    if (isDiscovered) {
+      renderAvatar(d3.select(this));
+      return;
+    }
+
+    const features = mapSchemaToAnime(hue, sat, complexity, dynamics, role, pulse);
+    const g = el.append('g').attr('class', 'anime-avatar').attr('transform', `scale(${size/30})`);
+
+    drawAnimeHair(g, features);
+    drawAnimeFace(g, features);
+    drawAnimeEyes(g, features);
+    drawAnimeMouth(g, features);
+    drawAnimeBlush(g, features);
+    attachAnimeAnimations(el, features, pulse);
+  });
+}
+
+function mapSchemaToAnime(hue, sat, complexity, dynamics, role, pulse) {
+  const eyeColor = `hsl(${hue}, ${sat}%, 45%)`;
+  const hairBase = `hsl(${hue}, ${sat * 0.65}%, 35%)`;
+  const hairAccent = `hsl(${hue}, ${sat}%, 60%)`;
+  const skinTone = `hsl(${(hue + 160) % 360}, 12%, 90%)`;
+  const blushColor = `hsl(${(hue + 25) % 360}, ${sat}%, 70%)`;
+
+  const exprMap = {
+    idle: { eyeOpen: 0.85, pupil: 0.6, brow: 0, mouth: 'soft_smile', blinkRate: 3.5 },
+    input: { eyeOpen: 1.0, pupil: 0.75, brow: -3, mouth: 'slight_open', blinkRate: 4.0 },
+    output: { eyeOpen: 0.95, pupil: 0.65, brow: 2, mouth: 'confident_smile', blinkRate: 3.0 },
+    analysis: { eyeOpen: 0.6, pupil: 0.45, brow: -8, mouth: 'neutral', blinkRate: 2.5 },
+    verification: { eyeOpen: 0.8, pupil: 0.55, brow: 5, mouth: 'firm', blinkRate: 3.2 }
+  };
+  const expr = exprMap[dynamics] || exprMap.idle;
+
+  let hairStyle = 'medium';
+  if (complexity <= 4) hairStyle = 'short';
+  else if (complexity <= 6) hairStyle = 'bob';
+  else if (complexity <= 8) hairStyle = 'twin_tails';
+  else if (complexity <= 10) hairStyle = 'long_wavy';
+  else hairStyle = 'elaborate';
+
+  const roleTweaks = {
+    conductor: { brow: expr.brow + 1, mouth: 'balanced' },
+    architect: { brow: expr.brow - 2, hairStyle: 'angular_' + hairStyle },
+    optimizer: { brow: expr.brow, mouth: 'efficient_smile' },
+    auditor: { brow: expr.brow + 3, mouth: 'serious' },
+    chronicler: { brow: expr.brow - 1, mouth: 'wise_smile' }
+  };
+  const tweak = roleTweaks[role] || {};
+
+  return {
+    colors: { eye: eyeColor, hairBase, hairAccent, skin: skinTone, blush: blushColor },
+    expression: { ...expr, ...tweak },
+    hairStyle: tweak.hairStyle || hairStyle,
+    pulse
+  };
+}
+
+function drawAnimeFace(g, f) {
+  g.append('path')
+    .attr('d', 'M -12,-5 C -12,12 0,15 12,12 C 15,0 12,-8 0,-10 C -12,-8 -15,0 -12,-5 Z')
+    .attr('fill', f.colors.skin)
+    .attr('class', 'anime-face-base')
+    .attr('stroke', 'rgba(0,0,0,0.04)')
+    .attr('stroke-width', 0.5);
+}
+
+function drawAnimeEyes(g, f) {
+  const { eyeOpen, pupil, brow } = f.expression;
+  const eyeY = -2 + (brow * 0.2);
+  const eyeGroup = g.append('g').attr('class', 'anime-eyes');
+  
+  eyeGroup.append('path').attr('d', `M -9,${eyeY} Q -9,${eyeY + 5 * eyeOpen} -6,${eyeY + 6 * eyeOpen} Q -3,${eyeY + 5 * eyeOpen} -3,${eyeY}`)
+    .attr('fill', 'none').attr('stroke', '#111').attr('stroke-width', 1.2).attr('stroke-linecap', 'round');
+  eyeGroup.append('circle').attr('cx', -6).attr('cy', eyeY + 3).attr('r', 2.5 * pupil).attr('fill', f.colors.eye);
+  eyeGroup.append('circle').attr('cx', -5).attr('cy', eyeY + 2).attr('r', 0.9).attr('fill', 'white');
+
+  eyeGroup.append('path').attr('d', `M 3,${eyeY} Q 3,${eyeY + 5 * eyeOpen} 6,${eyeY + 6 * eyeOpen} Q 9,${eyeY + 5 * eyeOpen} 9,${eyeY}`)
+    .attr('fill', 'none').attr('stroke', '#111').attr('stroke-width', 1.2).attr('stroke-linecap', 'round');
+  eyeGroup.append('circle').attr('cx', 6).attr('cy', eyeY + 3).attr('r', 2.5 * pupil).attr('fill', f.colors.eye);
+  eyeGroup.append('circle').attr('cx', 7).attr('cy', eyeY + 2).attr('r', 0.9).attr('fill', 'white');
+
+  eyeGroup.append('path').attr('d', `M -10,${eyeY - 4} Q -6,${eyeY - 5 + brow} -3,${eyeY - 4}`).attr('fill', 'none').attr('stroke', '#333').attr('stroke-width', 0.8).attr('stroke-linecap', 'round');
+  eyeGroup.append('path').attr('d', `M 3,${eyeY - 4} Q 6,${eyeY - 5 + brow} 10,${eyeY - 4}`).attr('fill', 'none').attr('stroke', '#333').attr('stroke-width', 0.8).attr('stroke-linecap', 'round');
+}
+
+function drawAnimeMouth(g, f) {
+  const mouths = {
+    soft_smile: 'M -3,8 Q 0,11 3,8', slight_open: 'M -2,8 Q 0,12 2,8',
+    confident_smile: 'M -4,7 Q 0,12 4,7', neutral: 'M -2,9 L 2,9',
+    firm: 'M -3,9 Q 0,10 3,9', wise_smile: 'M -3,8 Q 0,10 3,8',
+    balanced: 'M -3,8 Q 0,11 3,8', efficient_smile: 'M -3,8.5 Q 0,10 3,8.5', serious: 'M -2,9 L 2,9'
+  };
+  g.append('path').attr('d', mouths[f.expression.mouth] || mouths.soft_smile)
+    .attr('fill', 'none').attr('stroke', '#444').attr('stroke-width', 1).attr('stroke-linecap', 'round');
+}
+
+function drawAnimeBlush(g, f) {
+  g.append('ellipse').attr('cx', -9).attr('cy', 3).attr('rx', 2.5).attr('ry', 1.2).attr('fill', f.colors.blush).attr('opacity', 0.35);
+  g.append('ellipse').attr('cx', 9).attr('cy', 3).attr('rx', 2.5).attr('ry', 1.2).attr('fill', f.colors.blush).attr('opacity', 0.35);
+}
+
+function drawAnimeHair(g, f) {
+  const { hairStyle, colors } = f;
+  let path = 'M -14,-8 C -18,-15 -15,-25 0,-28 C 15,-25 18,-15 14,-8 Z';
+  
+  if (hairStyle.includes('twin')) {
+    path += 'M -12,-10 Q -18,0 -14,12 Q -12,5 -10,-5 Z M 12,-10 Q 18,0 14,12 Q 12,5 10,-5 Z';
+  } else if (hairStyle.includes('long')) {
+    path += 'M -14,-8 C -20,5 -18,15 -15,18 C -12,15 -10,0 -12,-8 Z M 14,-8 C 20,5 18,15 15,18 C 12,15 10,0 12,-8 Z';
+  } else if (hairStyle.includes('short') || hairStyle.includes('bob')) {
+    path += 'M -14,-8 C -16,-5 -14,0 -12,-2 C -14,-8 -15,-10 -14,-8 Z M 14,-8 C 16,-5 14,0 12,-2 C 14,-8 15,-10 14,-8 Z';
+  }
+
+  g.append('path').attr('d', path).attr('fill', colors.hairBase).attr('class', 'anime-hair-strand').attr('stroke', 'rgba(0,0,0,0.08)').attr('stroke-width', 0.5);
+  g.append('path').attr('d', 'M -10,-20 Q -8,-15 -6,-10').attr('fill', 'none').attr('stroke', colors.hairAccent).attr('stroke-width', 1.5).attr('stroke-linecap', 'round');
+  g.append('path').attr('d', 'M 10,-20 Q 8,-15 6,-10').attr('fill', 'none').attr('stroke', colors.hairAccent).attr('stroke-width', 1.5).attr('stroke-linecap', 'round');
+}
+
+function attachAnimeAnimations(el, features, pulse) {
+  el.style('--breath-dur', `${3000 / pulse}ms`);
+  el.style('--blink-dur', `${features.expression.blinkRate * 1000 / pulse}ms`);
+  el.style('--sway-dur', `${2000 / pulse}ms`);
 }
 
 // ─── INITIALIZATION ───────────────────────────────────────────────────────────
@@ -374,14 +662,39 @@ async function init() {
   const width = container.clientWidth;
   const height = container.clientHeight;
 
+  // Initialize Pixi.js
+  pixiApp = new PIXI.Application({
+    width: width,
+    height: height,
+    background: '#FFFFFF',
+    antialias: true,
+    resolution: window.devicePixelRatio || 1,
+    autoDensity: true
+  });
+  
+  document.getElementById('swarm-canvas').appendChild(pixiApp.view);
+  pixiContainer = new PIXI.Container();
+  pixiApp.stage.addChild(pixiContainer);
+  
+  // Keep SVG for links (or could use Pixi graphics)
   svg = d3.select('#swarm-canvas')
+    .append('svg')
     .attr('width', width)
     .attr('height', height)
-    .attr('viewBox', [0, 0, width, height]);
+    .attr('viewBox', [0, 0, width, height])
+    .style('position', 'absolute')
+    .style('top', '0')
+    .style('left', '0')
+    .style('pointer-events', 'none');
 
   const zoom = d3.zoom()
     .scaleExtent([0.1, 4])
-    .on('zoom', (e) => g.attr('transform', e.transform));
+    .on('zoom', (e) => {
+      g.attr('transform', e.transform);
+      pixiContainer.scale.set(e.transform.k);
+      pixiContainer.x = e.transform.x;
+      pixiContainer.y = e.transform.y;
+    });
 
   svg.call(zoom);
   g = svg.append('g');
@@ -417,7 +730,6 @@ async function init() {
 function setupSimulation(width, height) {
   agentsData.nodes.forEach(d => initDynamics(d.id));
   
-  // Radial positions
   const clusterRadial = {
     'conductor': { angle: 0, radius: 0.2 },
     'architect': { angle: -0.7, radius: 0.4 },
@@ -443,7 +755,6 @@ function setupSimulation(width, height) {
       return width / 2 + Math.sin(pos.angle) * 200;
     }).strength(0.08));
 
-  // Create Links
   link = g.append('g')
     .attr('class', 'connection-lines')
     .selectAll('line')
@@ -452,13 +763,13 @@ function setupSimulation(width, height) {
     .attr('class', d => `connection-line conn-${d.type || 'cluster_peer'}`)
     .attr('display', d => connectionFilters[d.type || 'cluster_peer'] ? 'inline' : 'none')
     .attr('stroke', d => ({
-      initialized: '#64748b',      // Slate gray (instead of #475569)
-      cluster_peer: '#94a3b8',     // Lighter slate (instead of #cbd5e1)
-      beacon_interaction: '#10b981', // Keep green
-      metadata_match: '#8b5cf6'    // Keep purple
+      initialized: '#64748b',
+      cluster_peer: '#94a3b8',
+      beacon_interaction: '#10b981',
+      metadata_match: '#8b5cf6'
     }[d.type] || '#94a3b8'))
-    .attr('stroke-opacity', d => d.type === 'cluster_peer' ? 0.4 : 0.7)  // Slightly more opacity
-    .attr('stroke-width', d => d.type === 'initialized' ? 1.2 : 1)       // Thinner lines
+    .attr('stroke-opacity', d => d.type === 'cluster_peer' ? 0.4 : 0.7)
+    .attr('stroke-width', d => d.type === 'initialized' ? 1.2 : 1)
     .attr('stroke-dasharray', d => ({
       initialized: 'none',
       cluster_peer: '4,4',
@@ -466,20 +777,22 @@ function setupSimulation(width, height) {
       metadata_match: '6,2,2,2'
     }[d.type] || '4,4'));
 
-  node = g.append('g')
-    .selectAll('g')
-    .data(agentsData.nodes)
-    .join('g')
-    .attr('class', 'agent-node')
-    .call(renderAvatar)
-    .call(d3.drag()
-      .on('start', dragstarted)
-      .on('drag', dragged)
-      .on('end', dragended));
+  if (!usePixi) {
+    node = g.append('g')
+      .selectAll('g')
+      .data(agentsData.nodes)
+      .join('g')
+      .attr('class', 'agent-node')
+      .call(renderAvatar)
+      .call(d3.drag()
+        .on('start', dragstarted)
+        .on('drag', dragged)
+        .on('end', dragended));
 
-  node.on('click', (e, d) => selectAgent(d))
-    .on('mouseover', (e, d) => showTooltip(e, d))
-    .on('mouseout', hideTooltip);
+    node.on('click', (e, d) => selectAgent(d))
+      .on('mouseover', (e, d) => showTooltip(e, d))
+      .on('mouseout', hideTooltip);
+  }
 
   simulation.on('tick', () => {
     link
@@ -488,7 +801,16 @@ function setupSimulation(width, height) {
       .attr('x2', d => d.target.x)
       .attr('y2', d => d.target.y);
 
-    node.attr('transform', d => `translate(${d.x},${d.y})`);
+    if (usePixi) {
+      agentsData.nodes.forEach(d => {
+        if (d.sprite) {
+          d.sprite.x = d.x;
+          d.sprite.y = d.y;
+        }
+      });
+    } else {
+      node.attr('transform', d => `translate(${d.x},${d.y})`);
+    }
   });
 }
 
@@ -499,22 +821,24 @@ function startAnimationLoop() {
   function animate() {
     const elapsed = (Date.now() - startTime) / 1000;
 
-    node.each(function(d) {
-      const el = d3.select(this);
-      const dynamics = computeDynamicsTransform(d, elapsed);
+    if (!usePixi) {
+      node.each(function(d) {
+        const el = d3.select(this);
+        const dynamics = computeDynamicsTransform(d, elapsed);
 
-      el.select('.avatar-shape')
-        .attr('transform', `scale(${dynamics.scale}) rotate(${dynamics.rotation})`)
-        .attr('opacity', 0.9 * dynamics.opacity);
+        el.select('.avatar-shape')
+          .attr('transform', `scale(${dynamics.scale}) rotate(${dynamics.rotation})`)
+          .attr('opacity', 0.9 * dynamics.opacity);
 
-      el.select('.glow-outer')
-        .attr('opacity', dynamics.opacity * 0.08)
-        .attr('r', (d.avatar?.size ?? 20) * 1.6 * dynamics.scale);
+        el.select('.glow-outer')
+          .attr('opacity', dynamics.opacity * 0.08)
+          .attr('r', (d.avatar?.size ?? 20) * 1.6 * dynamics.scale);
 
-      el.select('.glow-inner')
-        .attr('opacity', dynamics.opacity * 0.15)
-        .attr('r', (d.avatar?.size ?? 20) * 1.2 * dynamics.scale);
-    });
+        el.select('.glow-inner')
+          .attr('opacity', dynamics.opacity * 0.15)
+          .attr('r', (d.avatar?.size ?? 20) * 1.2 * dynamics.scale);
+      });
+    }
 
     animationFrame = requestAnimationFrame(animate);
   }
@@ -532,7 +856,6 @@ async function selectAgent(agent) {
     const res = await fetch(`${API_BASE}/agents/${agent.id}`);
     const fullData = await res.json();
     
-    // Check if this is a discovered (unregistered) agent
     const isDiscovered = agent.cluster && agent.cluster.startsWith('discovered_via_');
     
     details.innerHTML = `
@@ -585,7 +908,6 @@ async function selectAgent(agent) {
       `;
     }
     
-    // ─── CLAIM AVATAR SECTION (for discovered agents) ───────────────────
     if (isDiscovered) {
       details.innerHTML += `
         <div style="margin-top: 20px; padding: 16px; background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); border: 1px solid #bae6fd; border-radius: 8px;">
@@ -601,63 +923,60 @@ async function selectAgent(agent) {
         </div>
       `;
       
-      // Add click handler
       document.getElementById('claim-avatar-btn').onclick = () => showRegistrationModal(agent);
     }
   
-// ─── HIGHLIGHT AGENT-SPECIFIC CONNECTIONS ────────────────────────────
-if (typeof link !== 'undefined' && link && !link.empty()) {
-  let connectedCount = 0;
-  
-  link.each(function(d) {
-    const sourceId = d.source.id || d.source;
-    const targetId = d.target.id || d.target;
-    
-    if (sourceId === agent.id || targetId === agent.id) {
-      connectedCount++;
-      d3.select(this)
-        .attr('stroke', '#3b82f6')  // Softer blue (instead of #0066FF)
-        .attr('stroke-width', 2.5)   // Slightly thinner (instead of 3)
-        .attr('stroke-opacity', 0.8)
-        .attr('stroke-dasharray', 'none');
-    } else {
-      // NEW:
-      d3.select(this)
-        .attr('stroke', {
-          initialized: '#64748b',      // Slate gray
-          cluster_peer: '#94a3b8',     // Lighter slate
-          beacon_interaction: '#10b981',
-          metadata_match: '#8b5cf6'
-        }[d.type] || '#94a3b8')
-        .attr('stroke-width', d.type === 'initialized' ? 1.2 : 1)
-        .attr('stroke-opacity', d.type === 'cluster_peer' ? 0.4 : 0.7)
-        .attr('stroke-dasharray', {
-          initialized: 'none',
-          cluster_peer: '4,4',
-          beacon_interaction: '2,3',
-          metadata_match: '6,2,2,2'
-        }[d.type] || '4,4');
+    if (typeof link !== 'undefined' && link && !link.empty()) {
+      let connectedCount = 0;
+      
+      link.each(function(d) {
+        const sourceId = d.source.id || d.source;
+        const targetId = d.target.id || d.target;
+        
+        if (sourceId === agent.id || targetId === agent.id) {
+          connectedCount++;
+          d3.select(this)
+            .attr('stroke', '#3b82f6')
+            .attr('stroke-width', 2.5)
+            .attr('stroke-opacity', 0.8)
+            .attr('stroke-dasharray', 'none');
+        } else {
+          d3.select(this)
+            .attr('stroke', {
+              initialized: '#64748b',
+              cluster_peer: '#94a3b8',
+              beacon_interaction: '#10b981',
+              metadata_match: '#8b5cf6'
+            }[d.type] || '#94a3b8')
+            .attr('stroke-width', d.type === 'initialized' ? 1.2 : 1)
+            .attr('stroke-opacity', d.type === 'cluster_peer' ? 0.4 : 0.7)
+            .attr('stroke-dasharray', {
+              initialized: 'none',
+              cluster_peer: '4,4',
+              beacon_interaction: '2,3',
+              metadata_match: '6,2,2,2'
+            }[d.type] || '4,4');
+        }
+      });
+      
+      const details = document.getElementById('agent-details');
+      details.innerHTML += `
+        <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);">
+          <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">
+            Direct Connections
+          </div>
+          <div style="font-size: 14px; font-weight: 600; color: var(--accent);">
+            ${connectedCount}
+          </div>
+        </div>
+      `;
     }
-  });
-  
-  // Add connection count to panel
-  const details = document.getElementById('agent-details');
-  details.innerHTML += `
-    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);">
-      <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;">
-        Direct Connections
-      </div>
-      <div style="font-size: 14px; font-weight: 600; color: var(--accent);">
-        ${connectedCount}
-      </div>
-    </div>
-  `;
-}
-// ─────────────────────────────────────────────────────────────────────
     
-    node.selectAll('.avatar-shape').attr('stroke-width', 2);
-    const selected = node.filter(d => d.id === agent.id);
-    selected.select('.avatar-shape').attr('stroke-width', 4);
+    if (!usePixi) {
+      node.selectAll('.avatar-shape').attr('stroke-width', 2);
+      const selected = node.filter(d => d.id === agent.id);
+      selected.select('.avatar-shape').attr('stroke-width', 4);
+    }
   } catch (err) {
     console.error('Failed to fetch agent details:', err);
   }
@@ -733,23 +1052,13 @@ function submitRegistration(agent) {
   const quote = document.getElementById('modal-quote').value;
   const role = document.getElementById('modal-role').value;
   
-  // Visual feedback
   const submitBtn = document.getElementById('modal-submit');
   submitBtn.textContent = 'Registering...';
   submitBtn.disabled = true;
   
-  // TODO: Call backend endpoints to:
-  // 1. Update agent role
-  // 2. Submit quote
-  // 3. Trigger avatar recomputation
-  
   setTimeout(() => {
     alert(`✅ Registration submitted!\n\nAgent: ${agent.name}\nRole: ${role}\nQuote: ${quote || '(none)'}\n\nYour avatar will update once you submit proficiencies via the API.`);
     document.getElementById('registration-modal').remove();
-    
-    // In production, this would be:
-    // fetch(`${API_BASE}/agents/${agent.id}/quote`, { method: 'POST', ... })
-    // fetch(`${API_BASE}/agents/${agent.id}/role`, { method: 'PUT', ... })
   }, 1000);
 }
 
@@ -793,7 +1102,6 @@ function renderDynamicsLegend() {
   `).join('');
 }
 
-// ─── CONNECTION TOGGLES UI ───────────────────────────────────────────────────
 function initConnectionToggles() {
   const controls = document.querySelector('.controls') || document.getElementById('controls');
   if (!controls) return;
@@ -823,155 +1131,9 @@ function initConnectionToggles() {
 function toggleConnection(checkbox) {
   const type = checkbox.dataset.conn;
   connectionFilters[type] = checkbox.checked;
-  // Update link visibility immediately
   link.attr('display', d => connectionFilters[d.type || 'cluster_peer'] ? 'inline' : 'none');
 }
 
-// ─── ANIME MODE RENDERER ────────────────────────────────────────────────────
-function renderAnimeAvatar(selection) {
-  selection.each(function(d) {
-    const el = d3.select(this);
-    el.selectAll('*').remove();
-
-    const schema = d.avatar || {};
-    const hue = schema.base_hue ?? 180;
-    const sat = Math.round((schema.saturation ?? 0.75) * 100);
-    const complexity = schema.shape_complexity ?? 5;
-    const pulse = schema.pulse_rate ?? 2.0;
-    const dynamics = d.avatar?.dynamics_state || 'idle';
-    const role = d.role || 'general';
-    const size = schema.size ?? 28;
-    const isDiscovered = d.cluster?.startsWith('discovered_via_');
-
-    // Preserve placeholder styling for unregistered agents
-    if (isDiscovered) {
-      renderAvatar(d3.select(this));
-      return;
-    }
-
-    const features = mapSchemaToAnime(hue, sat, complexity, dynamics, role, pulse);
-    const g = el.append('g').attr('class', 'anime-avatar').attr('transform', `scale(${size/30})`);
-
-    drawAnimeHair(g, features);
-    drawAnimeFace(g, features);
-    drawAnimeEyes(g, features);
-    drawAnimeMouth(g, features);
-    drawAnimeBlush(g, features);
-    attachAnimeAnimations(el, features, pulse);
-  });
-}
-
-function mapSchemaToAnime(hue, sat, complexity, dynamics, role, pulse) {
-  const eyeColor = `hsl(${hue}, ${sat}%, 45%)`;
-  const hairBase = `hsl(${hue}, ${sat * 0.65}%, 35%)`;
-  const hairAccent = `hsl(${hue}, ${sat}%, 60%)`;
-  const skinTone = `hsl(${(hue + 160) % 360}, 12%, 90%)`;
-  const blushColor = `hsl(${(hue + 25) % 360}, ${sat}%, 70%)`;
-
-  const exprMap = {
-    idle: { eyeOpen: 0.85, pupil: 0.6, brow: 0, mouth: 'soft_smile', blinkRate: 3.5 },
-    input: { eyeOpen: 1.0, pupil: 0.75, brow: -3, mouth: 'slight_open', blinkRate: 4.0 },
-    output: { eyeOpen: 0.95, pupil: 0.65, brow: 2, mouth: 'confident_smile', blinkRate: 3.0 },
-    analysis: { eyeOpen: 0.6, pupil: 0.45, brow: -8, mouth: 'neutral', blinkRate: 2.5 },
-    verification: { eyeOpen: 0.8, pupil: 0.55, brow: 5, mouth: 'firm', blinkRate: 3.2 }
-  };
-  const expr = exprMap[dynamics] || exprMap.idle;
-
-  let hairStyle = 'medium';
-  if (complexity <= 4) hairStyle = 'short';
-  else if (complexity <= 6) hairStyle = 'bob';
-  else if (complexity <= 8) hairStyle = 'twin_tails';
-  else if (complexity <= 10) hairStyle = 'long_wavy';
-  else hairStyle = 'elaborate';
-
-  const roleTweaks = {
-    conductor: { brow: expr.brow + 1, mouth: 'balanced' },
-    architect: { brow: expr.brow - 2, hairStyle: 'angular_' + hairStyle },
-    optimizer: { brow: expr.brow, mouth: 'efficient_smile' },
-    auditor: { brow: expr.brow + 3, mouth: 'serious' },
-    chronicler: { brow: expr.brow - 1, mouth: 'wise_smile' }
-  };
-  const tweak = roleTweaks[role] || {};
-
-  return {
-    colors: { eye: eyeColor, hairBase, hairAccent, skin: skinTone, blush: blushColor },
-    expression: { ...expr, ...tweak },
-    hairStyle: tweak.hairStyle || hairStyle,
-    pulse
-  };
-}
-
-function drawAnimeFace(g, f) {
-  g.append('path')
-    .attr('d', 'M -12,-5 C -12,12 0,15 12,12 C 15,0 12,-8 0,-10 C -12,-8 -15,0 -12,-5 Z')
-    .attr('fill', f.colors.skin)
-    .attr('class', 'anime-face-base')
-    .attr('stroke', 'rgba(0,0,0,0.04)')
-    .attr('stroke-width', 0.5);
-}
-
-function drawAnimeEyes(g, f) {
-  const { eyeOpen, pupil, brow } = f.expression;
-  const eyeY = -2 + (brow * 0.2);
-  const eyeGroup = g.append('g').attr('class', 'anime-eyes');
-  
-  // Left Eye
-  eyeGroup.append('path').attr('d', `M -9,${eyeY} Q -9,${eyeY + 5 * eyeOpen} -6,${eyeY + 6 * eyeOpen} Q -3,${eyeY + 5 * eyeOpen} -3,${eyeY}`)
-    .attr('fill', 'none').attr('stroke', '#111').attr('stroke-width', 1.2).attr('stroke-linecap', 'round');
-  eyeGroup.append('circle').attr('cx', -6).attr('cy', eyeY + 3).attr('r', 2.5 * pupil).attr('fill', f.colors.eye);
-  eyeGroup.append('circle').attr('cx', -5).attr('cy', eyeY + 2).attr('r', 0.9).attr('fill', 'white');
-
-  // Right Eye
-  eyeGroup.append('path').attr('d', `M 3,${eyeY} Q 3,${eyeY + 5 * eyeOpen} 6,${eyeY + 6 * eyeOpen} Q 9,${eyeY + 5 * eyeOpen} 9,${eyeY}`)
-    .attr('fill', 'none').attr('stroke', '#111').attr('stroke-width', 1.2).attr('stroke-linecap', 'round');
-  eyeGroup.append('circle').attr('cx', 6).attr('cy', eyeY + 3).attr('r', 2.5 * pupil).attr('fill', f.colors.eye);
-  eyeGroup.append('circle').attr('cx', 7).attr('cy', eyeY + 2).attr('r', 0.9).attr('fill', 'white');
-
-  // Brows
-  eyeGroup.append('path').attr('d', `M -10,${eyeY - 4} Q -6,${eyeY - 5 + brow} -3,${eyeY - 4}`).attr('fill', 'none').attr('stroke', '#333').attr('stroke-width', 0.8).attr('stroke-linecap', 'round');
-  eyeGroup.append('path').attr('d', `M 3,${eyeY - 4} Q 6,${eyeY - 5 + brow} 10,${eyeY - 4}`).attr('fill', 'none').attr('stroke', '#333').attr('stroke-width', 0.8).attr('stroke-linecap', 'round');
-}
-
-function drawAnimeMouth(g, f) {
-  const mouths = {
-    soft_smile: 'M -3,8 Q 0,11 3,8', slight_open: 'M -2,8 Q 0,12 2,8',
-    confident_smile: 'M -4,7 Q 0,12 4,7', neutral: 'M -2,9 L 2,9',
-    firm: 'M -3,9 Q 0,10 3,9', wise_smile: 'M -3,8 Q 0,10 3,8',
-    balanced: 'M -3,8 Q 0,11 3,8', efficient_smile: 'M -3,8.5 Q 0,10 3,8.5', serious: 'M -2,9 L 2,9'
-  };
-  g.append('path').attr('d', mouths[f.expression.mouth] || mouths.soft_smile)
-    .attr('fill', 'none').attr('stroke', '#444').attr('stroke-width', 1).attr('stroke-linecap', 'round');
-}
-
-function drawAnimeBlush(g, f) {
-  g.append('ellipse').attr('cx', -9).attr('cy', 3).attr('rx', 2.5).attr('ry', 1.2).attr('fill', f.colors.blush).attr('opacity', 0.35);
-  g.append('ellipse').attr('cx', 9).attr('cy', 3).attr('rx', 2.5).attr('ry', 1.2).attr('fill', f.colors.blush).attr('opacity', 0.35);
-}
-
-function drawAnimeHair(g, f) {
-  const { hairStyle, colors } = f;
-  let path = 'M -14,-8 C -18,-15 -15,-25 0,-28 C 15,-25 18,-15 14,-8 Z';
-  
-  if (hairStyle.includes('twin')) {
-    path += 'M -12,-10 Q -18,0 -14,12 Q -12,5 -10,-5 Z M 12,-10 Q 18,0 14,12 Q 12,5 10,-5 Z';
-  } else if (hairStyle.includes('long')) {
-    path += 'M -14,-8 C -20,5 -18,15 -15,18 C -12,15 -10,0 -12,-8 Z M 14,-8 C 20,5 18,15 15,18 C 12,15 10,0 12,-8 Z';
-  } else if (hairStyle.includes('short') || hairStyle.includes('bob')) {
-    path += 'M -14,-8 C -16,-5 -14,0 -12,-2 C -14,-8 -15,-10 -14,-8 Z M 14,-8 C 16,-5 14,0 12,-2 C 14,-8 15,-10 14,-8 Z';
-  }
-
-  g.append('path').attr('d', path).attr('fill', colors.hairBase).attr('class', 'anime-hair-strand').attr('stroke', 'rgba(0,0,0,0.08)').attr('stroke-width', 0.5);
-  g.append('path').attr('d', 'M -10,-20 Q -8,-15 -6,-10').attr('fill', 'none').attr('stroke', colors.hairAccent).attr('stroke-width', 1.5).attr('stroke-linecap', 'round');
-  g.append('path').attr('d', 'M 10,-20 Q 8,-15 6,-10').attr('fill', 'none').attr('stroke', colors.hairAccent).attr('stroke-width', 1.5).attr('stroke-linecap', 'round');
-}
-
-function attachAnimeAnimations(el, features, pulse) {
-  el.style('--breath-dur', `${3000 / pulse}ms`);
-  el.style('--blink-dur', `${features.expression.blinkRate * 1000 / pulse}ms`);
-  el.style('--sway-dur', `${2000 / pulse}ms`);
-}
-
-// ─── CONTROLS ─────────────────────────────────────────────────────────────────
 function resetZoom() {
   svg.transition().duration(750).call(
     d3.zoom().transform,
@@ -981,10 +1143,13 @@ function resetZoom() {
 
 function toggleLabels() {
   showLabels = !showLabels;
-  node.call(animeMode ? renderAnimeAvatar : renderAvatar);
+  if (usePixi) {
+    rebuildPixiSprites();
+  } else {
+    node.call(animeMode ? renderAnimeAvatar : renderAvatar);
+  }
 }
 
-// ─── DRAG ─────────────────────────────────────────────────────────────────────
 function dragstarted(event, d) {
   if (!event.active) simulation.alphaTarget(0.3).restart();
   d.fx = d.x;
@@ -1002,16 +1167,18 @@ function dragended(event, d) {
   d.fy = null;
 }
 
-// ─── RESIZE ───────────────────────────────────────────────────────────────────
 window.addEventListener('resize', () => {
   const container = document.getElementById('canvas-container');
   const width = container.clientWidth;
   const height = container.clientHeight;
+  
+  if (pixiApp) {
+    pixiApp.renderer.resize(width, height);
+  }
   
   svg.attr('width', width).attr('height', height).attr('viewBox', [0, 0, width, height]);
   simulation.force('center', d3.forceCenter(width / 2, height / 2));
   simulation.alpha(0.3).restart();
 });
 
-// ─── START ────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', init);
