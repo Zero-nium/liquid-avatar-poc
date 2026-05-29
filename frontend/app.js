@@ -118,6 +118,24 @@ async function loadSwarmData() {
   }
 }
 
+// ─── AGENT FILTERING ─────────────────────────────────────────────────────────
+/**
+ * Filter agents for rendering based on mode and registration status.
+ * - Canvas modes (anime/animex): Only registered agents (no 'discovered_via_*' clusters)
+ * - SVG mode: All agents (including discovered placeholders)
+ */
+function getRenderableAgents() {
+  if (renderMode === 'geometric') {
+    return agentsData.nodes; // Show all in SVG mode
+  }
+  
+  // Canvas modes: filter out discovered/unregistered agents
+  return agentsData.nodes.filter(agent => {
+    const cluster = agent.cluster || '';
+    return !cluster.startsWith('discovered_via_');
+  });
+}
+
 // ─── COLOR UTILS ──────────────────────────────────────────────────────────────
 function hslToHex(h, s, l) {
   l /= 100;
@@ -400,7 +418,9 @@ function renderCanvasFrame() {
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, width, height);
   
-  agentsData.nodes.forEach(d => {
+  const renderableAgents = getRenderableAgents();
+  
+  renderableAgents.forEach(d => {
     if (!d.x || !d.y) return;
     
     const size = d.avatar?.size ?? 28;
@@ -425,10 +445,12 @@ async function renderAnimexFrame() {
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, width, height);
   
+  const renderableAgents = getRenderableAgents();
+  
   // Process nodes in batches to avoid blocking the main thread
   const batchSize = 10;
-  for (let i = 0; i < agentsData.nodes.length; i += batchSize) {
-    const batch = agentsData.nodes.slice(i, i + batchSize);
+  for (let i = 0; i < renderableAgents.length; i += batchSize) {
+    const batch = renderableAgents.slice(i, i + batchSize);
     
     for (const d of batch) {
       if (!d.x || !d.y) continue;
@@ -741,7 +763,10 @@ function setupSimulation(w, h) {
       let closest = null;
       let minDist = 40;
 
-      agentsData.nodes.forEach(d => {
+      // Only check renderable agents for click detection
+      const renderableAgents = getRenderableAgents();
+      
+      renderableAgents.forEach(d => {
         if (!d.x) return;
         const dist = Math.hypot(d.x - x, d.y - y);
         if (dist < minDist) {
