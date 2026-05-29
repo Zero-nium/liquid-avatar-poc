@@ -685,6 +685,15 @@ async function init() {
     initConnectionToggles();
     updateModeButton();
 
+    // Backup click handler in case onclick attribute fails
+    const modeBtn = document.getElementById('mode-toggle');
+    if (modeBtn) {
+      modeBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        cycleRenderMode();
+      });
+    }
+
   } catch (err) {
     console.error('Failed to load swarm data:', err);
     document.getElementById('loading').innerHTML = `
@@ -1057,3 +1066,8 @@ console.log('✅ app.js loaded');
 console.log('✅ cycleRenderMode defined:', typeof cycleRenderMode === 'function');
 console.log('✅ updateModeButton defined:', typeof updateModeButton === 'function');
 console.log('✅ Current renderMode:', renderMode);
+
+// ─── FALLBACK ALIASES (for backward compatibility) ─────────────────────
+// Support old HTML references or cached JS
+window.toggleAnimeMode = cycleRenderMode;
+console.log('🔗 Fallback: toggleAnimeMode → cycleRenderMode');
