@@ -3,10 +3,11 @@ Liquid Avatar PoC - Backend API
 FastAPI + SQLite/Pydantic + Optional Turso
 Free-tier optimized: single file, minimal deps, persistent storage ready.
 
-Schema v1.1: Expertise→Color, Role→Geometry, Activity→Dynamics
+Schema v1.2: Expertise→Color, Role→Geometry, Activity→Dynamics
 Beacon Bridge: Dynamic agent discovery & real-time propagation
 """
 
+# ─── IMPORTS ──────────────────────────────────────────────────────────────────
 from fastapi import FastAPI, Request, HTTPException, status, Depends, Security, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +27,9 @@ import re
 import logging
 import sys
 import time
+
+# Import Minds gateway router (defined after app creation)
+from minds_gateway import router as minds_router
 
 # ─── LOGGING CONFIGURATION ────────────────────────────────────────────────────
 
@@ -106,27 +110,19 @@ class RateLimiter:
     def __init__(self, max_requests: int, window_seconds: int):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
-        # Use comment-style type hint to avoid runtime evaluation issues
         self.requests = {}  # type: Dict[str, deque]
     
     def is_allowed(self, identifier: str) -> bool:
         now = time.time()
-        
-        # Initialize deque for this identifier if not exists
         if identifier not in self.requests:
             self.requests[identifier] = deque()
-        
-        # Clean old requests
         while self.requests[identifier] and self.requests[identifier][0] < now - self.window_seconds:
             self.requests[identifier].popleft()
-        
         if len(self.requests[identifier]) >= self.max_requests:
             return False
-        
         self.requests[identifier].append(now)
         return True
 
-# Global rate limiters
 public_register_limit = RateLimiter(max_requests=5, window_seconds=60)
 agent_discover_limit = RateLimiter(max_requests=10, window_seconds=60)
 
@@ -216,7 +212,6 @@ class MetadataItem(BaseModel):
 # ─── DATABASE UTILS (ASYNC) ───────────────────────────────────────────────────
 
 async def get_db():
-    """Get database connection — supports both SQLite and Turso/libSQL."""
     if USE_TURSO:
         return create_client(url=TURSO_URL, auth_token=TURSO_TOKEN)
     else:
@@ -225,16 +220,14 @@ async def get_db():
         return conn
 
 async def execute_sql(db, sql: str):
-    """Execute a SQL statement, handling both SQLite and Turso/libSQL."""
-    if hasattr(db, 'cursor'):  # SQLite
+    if hasattr(db, 'cursor'):
         db.cursor().execute(sql)
-    else:  # Turso libsql client (async)
+    else:
         await db.execute(sql)
 
 async def run_query(db, sql: str, params: tuple = None, fetch: str = None):
-    """Unified async query runner for SQLite & Turso with parameter binding."""
     params = params or ()
-    if hasattr(db, 'cursor'):  # SQLite
+    if hasattr(db, 'cursor'):
         cur = db.cursor()
         cur.execute(sql, params)
         if fetch == 'all':
@@ -242,7 +235,7 @@ async def run_query(db, sql: str, params: tuple = None, fetch: str = None):
         if fetch == 'one':
             return cur.fetchone()
         return cur
-    else:  # Turso libsql client (async)
+    else:
         result = await db.execute(sql, params)
         if fetch == 'all':
             return result.rows
@@ -251,7 +244,6 @@ async def run_query(db, sql: str, params: tuple = None, fetch: str = None):
         return result
 
 async def init_db():
-    """Initialize database schema — works with SQLite or Turso."""
     conn = await get_db()
     
     tables = [
@@ -306,13 +298,6 @@ async def init_db():
             verified_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
         )""",
-        """CREATE TABLE IF NOT EXISTS agent_quotes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent_id TEXT UNIQUE,
-            quote TEXT NOT NULL,
-            verified_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
-        )""",
         """CREATE TABLE IF NOT EXISTS agent_connections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_id TEXT NOT NULL,
@@ -324,7 +309,7 @@ async def init_db():
             FOREIGN KEY (source_id) REFERENCES agents(agent_id),
             FOREIGN KEY (target_id) REFERENCES agents(agent_id)
         )""",
-        # Replace the agent_metadata table definition with this Turso-compatible version:
+        # Turso-compatible agent_metadata (commented out for PoC)
         # """CREATE TABLE IF NOT EXISTS agent_metadata (
         #    id INTEGER PRIMARY KEY,
         #    agent_id TEXT NOT NULL,
@@ -345,7 +330,6 @@ async def init_db():
     await conn.close()
 
 async def seed_ontology():
-    """Seed canonical ontology domains."""
     conn = await get_db()
     canonical = [
         ("architecture", 210, json.dumps(["#2D3A8C", "#22D3EE"]), "hexagon"),
@@ -372,7 +356,6 @@ async def seed_ontology():
 async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficiency], activity_status: str, agent_role: Optional[str] = None) -> AvatarSignature:
     """Compute avatar visual signature. Priority: Role > Skill Domain."""
 
-    # ─── SCHEMA V1.2: ROLE HIERARCHY OVERRIDE ────────────────────────────────
     forced_shape = None
     role_based_hue = None
 
@@ -380,60 +363,32 @@ async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficienc
         role_lower = agent_role.lower()
         logger.info(f"Schema v1.2: Processing role '{role_lower}' for agent {agent_id}")
     
-        # Schema v1.2: Updated role → shape mapping
         council_shapes = {
-            "conductor": 10,    # Decagon
-            "auditor": 8,       # Octagon
-            "architect": 6,     # Hexagon
-            "optimizer": 3,     # Triangle
-            "chronicler": 12,   # Dodecagon
-            "chronicle": 12,    # Alias
-            "general": 5        # Pentagon
-        }  
-    
-        # Schema v1.2: Role-based hue mapping
+            "conductor": 10, "auditor": 8, "architect": 6,
+            "optimizer": 3, "chronicler": 12, "chronicle": 12, "general": 5
+        }
         role_hues = {
-            "conductor": 180,   # Teal
-            "architect": 270,   # Violet
-            "optimizer": 45,    # Amber
-            "auditor": 210,     # Blue
-            "chronicler": 300,  # Amethyst
-            "chronicle": 300,
-            "general": 180      # Teal
+            "conductor": 180, "architect": 270, "optimizer": 45,
+            "auditor": 210, "chronicler": 300, "chronicle": 300, "general": 180
         }
     
         if role_lower in council_shapes:
             forced_shape = council_shapes[role_lower]
-            logger.info(f"  → Shape set to {forced_shape} for role '{role_lower}'")
-        else:
-            logger.warning(f"  → Unknown role '{role_lower}', using default shape")
-    
         if role_lower in role_hues:
             role_based_hue = role_hues[role_lower]
-        logger.info(f"  → Hue set to {role_based_hue}° for role '{role_lower}'")
-# ────────────────────────────────────────────────────────────────────────
 
     conn = await get_db()
     
-    # ─── SCHEMA V1.2: HUE FALLBACK (Fix homogeneity bug) ─────────────────────
-    # Role-based base hues when no proficiencies exist
-    role_hues = {
-        "conductor": 180,   # Teal (authority)
-        "architect": 270,   # Violet (design)
-        "optimizer": 45,    # Amber (efficiency)
-        "auditor": 210,     # Blue (precision)
-        "chronicler": 300,  # Amethyst (permanence)
-        "chronicle": 300,
-        "general": 180      # Teal (neutral)
+    role_hues_fallback = {
+        "conductor": 180, "architect": 270, "optimizer": 45,
+        "auditor": 210, "chronicler": 300, "chronicle": 300, "general": 180
     }
-    # ─────────────────────────────────────────────────────────────────────────
 
     if not proficiencies:
         dominant_domain = "general"
         avg_level = 0.5
         skill_count = 0
-        # Use role-based hue fallback
-        base_hue = role_hues.get(agent_role.lower() if agent_role else "general", 180)
+        base_hue = role_hues_fallback.get(agent_role.lower() if agent_role else "general", 180)
     else:
         categories = {}
         for p in proficiencies:
@@ -446,11 +401,8 @@ async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficienc
         avg_level = sum(p.level for p in proficiencies) / len(proficiencies)
         skill_count = len(proficiencies)
         
-        # Get hue from ontology
         row = await run_query(conn, "SELECT base_hue FROM ontology WHERE domain = ?", (dominant_domain,), fetch="one")
         base_hue = row["base_hue"] if row else 180
-    
-    # ... existing ontology query code ...
 
     row = await run_query(conn, "SELECT base_hue, spectrum, geometry_hint FROM ontology WHERE domain = ?", (dominant_domain,), fetch="one")
     if row:
@@ -458,18 +410,12 @@ async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficienc
     else:
         base_hue, geometry_hint = 180, "hexagon"
 
-    # ─── SCHEMA V1.2: APPLY ROLE-BASED VALUES IF NO PROFICIENCIES ──────────
     if not proficiencies:
         if role_based_hue is not None:
             base_hue = role_based_hue
-            logger.info(f"Applied role-based hue {base_hue}° for {agent_id}")
-    
         if forced_shape is not None:
             shape_complexity = forced_shape
-            logger.info(f"Applied role-based shape {shape_complexity} for {agent_id}")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    
     if skill_count == 0:
         shape_complexity = 3
     elif skill_count == 1:
@@ -494,10 +440,8 @@ async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficienc
     saturation = 0.5 + (avg_level * 0.5)
     pulse_rate = 1.0 + (avg_level * 2.0)
     
-    # ─── APPLY ROLE HIERARCHY OVERRIDE ───────────────────────────────────────
     if forced_shape is not None:
         shape_complexity = forced_shape
-    # ─────────────────────────────────────────────────────────────────────────
 
     await conn.close()
     
@@ -541,14 +485,12 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 async def broadcast_swarm_update(update_type: str, data: Optional[dict] = None):
-    """Broadcast updates to connected WebSocket clients."""
     message = {"type": update_type, "timestamp": datetime.now(timezone.utc).isoformat()}
     if data is not None:
         message["data"] = data
     try:
         await manager.broadcast(message)
     except Exception as e:
-        import logging
         logging.error(f"Broadcast failed: {e}", exc_info=True)
 
 # ─── FASTAPI APP ──────────────────────────────────────────────────────────────
@@ -579,14 +521,19 @@ async def lifespan(app: FastAPI):
     yield
     log_agent_event(logger, "shutdown", "system", "Liquid Avatar API shutting down")
 
-app = FastAPI(title="Liquid Avatar API", version=SCHEMA_VERSION, lifespan=lifespan)
+# Create app instance FIRST
+app = FastAPI(title="Liquid Avatar", version="1.2", lifespan=lifespan)
 
+# Add middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Register routers AFTER app exists
+app.include_router(minds_router)
 
 # ─── ENDPOINTS ────────────────────────────────────────────────────────────────
 
@@ -615,7 +562,7 @@ async def report_agent_state(report: AgentReport):
     
     await run_query(conn, "UPDATE agents SET last_reported = ? WHERE agent_id = ?", (now, report.agent_id))
     
-    avatar = await compute_avatar_signature(report.agent_id, report.proficiencies, report.activity_status, request.role)
+    avatar = await compute_avatar_signature(report.agent_id, report.proficiencies, report.activity_status, report.role)
     
     await run_query(conn, """
         INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
@@ -680,13 +627,11 @@ async def agent_self_discover(request: AgentDiscoverRequest):
         VALUES (?, ?, ?, ?, ?, ?)
     """, (request.agent_id, request.name, request.initialized_by, request.swarm_cluster, request.role, now))
     
-    # ─── AUTO-CREATE INITIALIZATION CONNECTION ──────────────────────────
     if request.initialized_by:
         await run_query(conn, """
             INSERT OR IGNORE INTO agent_connections (source_id, target_id, connection_type, created_at)
             VALUES (?, ?, 'initialized', ?)
         """, (request.initialized_by, request.agent_id, now))
-    # ────────────────────────────────────────────────────────────────────
     
     if request.proficiencies:
         for p in request.proficiencies:
@@ -837,49 +782,29 @@ async def report_agent_activity(activity: ActivityMetrics):
     }
 
 @app.post("/agents/register/public")
-async def public_register_agent(
-    request: Request,
-    data: PublicRegisterRequest
-):
-    """
-    Public registration endpoint - no API key required.
-    Rate limited and validated to prevent abuse.
-    """
-    # Get client IP for rate limiting
+async def public_register_agent(request: Request, data: PublicRegisterRequest):
     client_ip = request.client.host if request.client else "unknown"
     
-    # Rate limit by IP
     if not public_register_limit.is_allowed(client_ip):
-        raise HTTPException(
-            status_code=429,
-            detail="Too many registration attempts. Please wait before trying again."
-        )
+        raise HTTPException(status_code=429, detail="Too many registration attempts. Please wait before trying again.")
     
-    # Rate limit by agent_id to prevent duplicate spam
     if not agent_discover_limit.is_allowed(data.agent_id):
-        raise HTTPException(
-            status_code=429,
-            detail="Too many attempts for this agent_id. Please wait before trying again."
-        )
+        raise HTTPException(status_code=429, detail="Too many attempts for this agent_id. Please wait before trying again.")
     
-    # Proceed with registration
     conn = await get_db()
     now = datetime.now(timezone.utc).isoformat()
     
     try:
-        # Check if agent already exists
         existing = await run_query(conn, "SELECT agent_id FROM agents WHERE agent_id = ?", (data.agent_id,), fetch="one")
         if existing:
             await conn.close()
             raise HTTPException(status_code=409, detail="Agent already registered")
         
-        # Insert agent record
         await run_query(conn, """
             INSERT INTO agents (agent_id, name, initialized_by, swarm_cluster, role, last_reported)
             VALUES (?, ?, ?, ?, ?, ?)
         """, (data.agent_id, data.name, data.initialized_by, data.swarm_cluster, data.role, now))
         
-        # Insert proficiencies if provided
         if data.proficiencies:
             for p in data.proficiencies:
                 await run_query(conn, """
@@ -887,13 +812,11 @@ async def public_register_agent(
                     VALUES (?, ?, ?, ?, ?)
                 """, (data.agent_id, p.skill, p.level, p.category, now))
         
-        # Log registration
         await run_query(conn, """
             INSERT INTO activity_log (agent_id, status, task, timestamp)
             VALUES (?, ?, ?, ?)
         """, (data.agent_id, "registered", data.current_task or "Public registration", now))
         
-        # Compute and insert avatar
         avatar = await compute_avatar_signature(data.agent_id, data.proficiencies or [], data.activity_status, data.role)
         await run_query(conn, """
             INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
@@ -908,7 +831,6 @@ async def public_register_agent(
                        f"Agent {data.name} registered via public endpoint",
                        role=data.role, cluster=data.swarm_cluster, ip=client_ip)
         
-        # Broadcast update
         await broadcast_swarm_update("agent_registered", {
             "agent_id": data.agent_id,
             "name": data.name,
@@ -934,10 +856,8 @@ async def public_register_agent(
 
 @app.post("/agents/{agent_id}/quote", dependencies=[Depends(verify_write_key)])
 async def set_agent_quote(agent_id: str, quote: AgentQuote):
-    """Store a verified agent quote (appears in Selected Agent panel)."""
     conn = await get_db()
     
-    # Verify agent exists
     agent = await run_query(conn, "SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
     if not agent:
         await conn.close()
@@ -945,7 +865,6 @@ async def set_agent_quote(agent_id: str, quote: AgentQuote):
     
     now = datetime.now(timezone.utc).isoformat()
     
-    # Upsert quote (INSERT OR REPLACE)
     await run_query(conn, """
         INSERT OR REPLACE INTO agent_quotes (agent_id, quote, verified_at)
         VALUES (?, ?, ?)
@@ -966,7 +885,6 @@ async def set_agent_quote(agent_id: str, quote: AgentQuote):
 
 @app.get("/agents/{agent_id}/quote")
 async def get_agent_quote(agent_id: str):
-    """Retrieve an agent's verified quote."""
     conn = await get_db()
     
     quote_row = await run_query(conn, """
@@ -988,34 +906,25 @@ async def get_agent_quote(agent_id: str):
 
 @app.post("/beacon/announce", dependencies=[Depends(verify_write_key)])
 async def beacon_announce(announcement: BeaconAnnouncement):
-    """
-    Handle Beacon announcements from agents.
-    Validates signature, propagates to swarm, and updates visualization.
-    """
     conn = await get_db()
     now = datetime.now(timezone.utc).isoformat()
     
-    # 1. Verify agent exists
     agent = await run_query(conn, "SELECT * FROM agents WHERE agent_id = ?", (announcement.agent_id,), fetch="one")
     if not agent:
         await conn.close()
         raise HTTPException(status_code=404, detail="Agent not registered. Register via /agents/discover first.")
     
-    # 2. Extract payload data
     payload = announcement.payload
     status = payload.get("status", "idle")
     task = payload.get("task")
     
-    # 3. Update agent activity log (Status 'beacon' for discoverability)
     await run_query(conn, """
         INSERT INTO activity_log (agent_id, status, task, timestamp)
         VALUES (?, 'beacon', ?, ?)
     """, (announcement.agent_id, task, now))
     
-    # Update agent last_reported for general discovery
     await run_query(conn, "UPDATE agents SET last_reported = ? WHERE agent_id = ?", (now, announcement.agent_id))
     
-    # 4. Update avatar dynamics without recomputing entire signature
     await run_query(conn, """
         INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
         SELECT agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, ?, ?
@@ -1023,7 +932,6 @@ async def beacon_announce(announcement: BeaconAnnouncement):
         ORDER BY computed_at DESC LIMIT 1
     """, (status, now, announcement.agent_id))
     
-    # 5. Propagate to connected WebSocket clients (real-time swarm update)
     await broadcast_swarm_update("beacon_update", {
         "agent_id": announcement.agent_id,
         "status": status,
@@ -1050,12 +958,10 @@ async def beacon_announce(announcement: BeaconAnnouncement):
 
 @app.get("/beacon/discoverable")
 async def get_beacon_discoverable(limit: int = 50, cluster: Optional[str] = None):
-    """Return agents actively broadcasting via Beacon (last 5 minutes)."""
     from datetime import datetime, timezone, timedelta
     
     conn = await get_db()
     
-    # Simplified query: agents + activity_log only (reliable in Turso)
     query = """
         SELECT a.agent_id, a.name, a.role, a.swarm_cluster, 
                al.timestamp as last_beacon
@@ -1064,7 +970,7 @@ async def get_beacon_discoverable(limit: int = 50, cluster: Optional[str] = None
         WHERE al.status = 'beacon'
         ORDER BY al.timestamp DESC LIMIT ?
     """
-    params = [limit * 2]  # Fetch extra for Python filtering
+    params = [limit * 2]
     if cluster:
         query += " AND a.swarm_cluster = ?"
         params.insert(0, cluster)
@@ -1072,7 +978,6 @@ async def get_beacon_discoverable(limit: int = 50, cluster: Optional[str] = None
     rows = await run_query(conn, query, tuple(params), fetch="all")
     await conn.close()
     
-    # Filter in Python using reliable ISO 8601 parsing
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
     filtered_rows = []
     
@@ -1085,7 +990,7 @@ async def get_beacon_discoverable(limit: int = 50, cluster: Optional[str] = None
             if ts >= cutoff:
                 filtered_rows.append(row)
         except (ValueError, TypeError):
-            continue  # Skip unparseable timestamps
+            continue
     
     return {
         "active_beacons": [
@@ -1099,7 +1004,6 @@ async def get_beacon_discoverable(limit: int = 50, cluster: Optional[str] = None
 
 @app.get("/beacon/health")
 async def beacon_health():
-    """Health check for Beacon relay infrastructure."""
     return {
         "status": "ok",
         "relays_active": True,
@@ -1177,7 +1081,6 @@ async def get_agent(agent_id: str):
     avatar_row = await run_query(conn, "SELECT * FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1", (agent_id,), fetch="one")
     activity = await run_query(conn, "SELECT status, task, timestamp FROM activity_log WHERE agent_id = ? ORDER BY timestamp DESC LIMIT 20", (agent_id,), fetch="all")
     
-    # Get quote if exists
     quote_row = await run_query(conn, "SELECT quote, verified_at FROM agent_quotes WHERE agent_id = ?", (agent_id,), fetch="one")
     
     await conn.close()
@@ -1211,10 +1114,8 @@ async def get_ontology():
 
 @app.get("/swarm/map")
 async def get_swarm_map():
-    """Returns nodes and edges for D3.js force-directed visualization."""
     conn = await get_db()
     
-    # Fetch agents
     rows = await run_query(conn, """
         SELECT a.agent_id, a.name, a.initialized_by, a.role, a.swarm_cluster,
                av.base_hue, av.saturation, av.shape_complexity, av.pulse_rate, av.size, av.dynamics_state
@@ -1242,10 +1143,8 @@ async def get_swarm_map():
         })
         agent_ids.add(row["agent_id"])
 
-   # ─── BUILD CONNECTION EDGES ──────────────────────────────────────────
     edges = []
     
-    # 1. Initialization relationships (from agent_connections table)
     try:
         init_edges = await run_query(conn, """
             SELECT source_id, target_id FROM agent_connections 
@@ -1258,35 +1157,23 @@ async def get_swarm_map():
     except Exception as ex:
         logger.warning(f"Could not fetch initialized edges: {ex}")
     
-    # 2. Cluster peer connections (auto-generated for visualization)
     cluster_groups = {}
     for n in nodes:
         if n["cluster"]:
             cluster_groups.setdefault(n["cluster"], []).append(n["id"])
     
     for cluster, members in cluster_groups.items():
-        # ─── SKIP AUTO-CONNECTIONS FOR DISCOVERED AGENTS ────────────────
-        # This prevents Ethoswarm/GitHub agents from forming starbursts
         if cluster.startswith('discovered_via_'):
-            continue  
-        # ────────────────────────────────────────────────────────────────
+            continue
         
         if len(members) > 1:
-            # Connect each member to the first member of the cluster (star topology)
             center = members[0]
             for member in members[1:]:
                 edges.append({"source": center, "target": member, "type": "cluster_peer"})
     
     await conn.close()
     return {"nodes": nodes, "edges": edges, "node_count": len(nodes), "edge_count": len(edges)}
-    
-    return {
-        "nodes": nodes, 
-        "edges": edges, 
-        "node_count": len(nodes), 
-        "edge_count": len(edges)
-    }
-    
+
 @app.post("/seed/mock-swarm")
 async def seed_mock_swarm():
     conn = await get_db()
@@ -1346,14 +1233,8 @@ async def seed_mock_swarm():
 async def health():
     return {"status": "ok", "schema_version": SCHEMA_VERSION, "origin": "Aura Quorum"}
 
-# --- DISCOVERY ENDPOINT ---------------------------------------------------------
-
 @app.get("/agents/unregistered")
 async def get_unregistered_agents(limit: int = 100, cluster: Optional[str] = None):
-    """
-    Return agents that have been discovered but not fully registered/enriched.
-    These are agents with minimal data (no proficiencies, no avatar computation).
-    """
     conn = await get_db()
     
     query = """
@@ -1395,8 +1276,6 @@ async def get_unregistered_agents(limit: int = 100, cluster: Optional[str] = Non
         ],
         "count": len(rows)
     }
-
-# ─── METHODOLOGY ENDPOINT ─────────────────────────────────────────────────────
 
 @app.get("/methodology")
 async def get_methodology():
@@ -1463,7 +1342,7 @@ class MCPQuery(BaseModel):
 
 class MCPResponse(BaseModel):
     query_type: str
-    Any
+    data: Any
     timestamp: str
 
 @app.post("/mcp/query", response_model=MCPResponse)
@@ -1521,14 +1400,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.post("/agents/{agent_id}/metadata", dependencies=[Depends(verify_write_key)])
 async def set_agent_metadata(agent_id: str, item: MetadataItem):
-    """Store secure metadata fingerprint for agent matching (PoC mode)."""
-    # Temporary PoC: return success without storing to avoid Turso issues
     log_agent_event(logger, "metadata_poc", agent_id, f"Metadata stored (PoC mode): {item.key}")
     return {"status": "stored (PoC mode)", "agent_id": agent_id, "key": item.key}
 
 @app.get("/agents/{agent_id}/metadata")
 async def get_agent_metadata(agent_id: str, key: Optional[str] = None):
-    """Retrieve public metadata (PoC mode)."""
     return {
         "agent_id": agent_id,
         "metadata": [],
@@ -1537,7 +1413,6 @@ async def get_agent_metadata(agent_id: str, key: Optional[str] = None):
 
 @app.get("/agents/match")
 async def match_agents(key: str, value: str, limit: int = 10):
-    """Find agents with matching public metadata (PoC mode)."""
     return {
         "matches": [],
         "query": {"key": key, "value": value},
@@ -1550,11 +1425,10 @@ async def match_agents(key: str, value: str, limit: int = 10):
 @app.get("/avatar/schema")
 async def get_avatar_schema():
     return {
-        "version": "1.2",  # Updated from 1.1
+        "version": "1.2",
         "mapping_rules": {
             "color": {"source": "dominant proficiency category", "lookup": "ontology.domain → base_hue + spectrum"},
             "shape": {"source": "agent role", "mapping": {
-                # Schema v1.2: Updated role mapping
                 "conductor": {"geometry": "decagon", "complexity": 10},
                 "architect": {"geometry": "hexagon", "complexity": 6},
                 "optimizer": {"geometry": "triangle", "complexity": 3},
@@ -1599,7 +1473,6 @@ async def verify_agent_registration(agent_id: str):
     avatar = await run_query(conn, "SELECT * FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1", (agent_id,), fetch="one")
     activity = await run_query(conn, "SELECT status, task, timestamp FROM activity_log WHERE agent_id = ? ORDER BY timestamp DESC LIMIT 5", (agent_id,), fetch="all")
     
-    # Get quote if exists
     quote_row = await run_query(conn, "SELECT quote, verified_at FROM agent_quotes WHERE agent_id = ?", (agent_id,), fetch="one")
     
     await conn.close()
@@ -1666,26 +1539,19 @@ async def get_avatar_preview(agent_id: str):
     
     return {"agent_id": agent_id, "name": agent["name"], "role": agent["role"], "svg": svg, "avatar_data": dict(avatar)}
 
-# --- CLEAN UP -----------------------------------------------------------------
-
 @app.delete("/agents/{agent_id}", dependencies=[Depends(verify_write_key)])
 async def delete_agent(agent_id: str):
-    """Delete an agent and all associated data (proficiencies, avatars, quotes, activity)."""
     conn = await get_db()
     
-    # Verify agent exists
     agent = await run_query(conn, "SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
     if not agent:
         await conn.close()
         raise HTTPException(status_code=404, detail="Agent not found")
     
-    # Delete associated data (order matters for foreign keys)
     await run_query(conn, "DELETE FROM proficiencies WHERE agent_id = ?", (agent_id,))
     await run_query(conn, "DELETE FROM avatar_states WHERE agent_id = ?", (agent_id,))
     await run_query(conn, "DELETE FROM activity_log WHERE agent_id = ?", (agent_id,))
     await run_query(conn, "DELETE FROM agent_quotes WHERE agent_id = ?", (agent_id,))
-    
-    # Delete the agent record
     await run_query(conn, "DELETE FROM agents WHERE agent_id = ?", (agent_id,))
     
     if hasattr(conn, 'commit'):
@@ -1694,11 +1560,9 @@ async def delete_agent(agent_id: str):
     
     log_agent_event(logger, "agent_deleted", agent_id, "Agent and all associated data deleted")
     
-    # Broadcast update to remove from UI
     await broadcast_swarm_update("agent_removed", {"agent_id": agent_id})
     
     return {"status": "deleted", "agent_id": agent_id}
-
 
 # ─── STATIC FILES ─────────────────────────────────────────────────────────────
 

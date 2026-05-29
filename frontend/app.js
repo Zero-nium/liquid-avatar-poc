@@ -1,6 +1,6 @@
 /**
 Liquid Avatar — Swarm Visualization Engine v1.2
-Hybrid Rendering: D3.js Physics + Canvas 2D (High Quality Anime) + SVG (Geometric)
+Hybrid Rendering: D3.js Physics + Canvas 2D (Paperdoll) + AI-Generated (AnimeX) + SVG (Geometric)
 */
 const API_BASE = window.location.origin.includes('localhost')
   ? 'http://localhost:8000'
@@ -17,7 +17,8 @@ let showConnections = true;
 let width, height;
 
 // ─── RENDER MODE STATE ───────────────────────────────────────────────────────
-let useAnimeMode = false; // DEFAULT TO FALSE (geometric SVG)
+// Modes: 'geometric' (SVG) | 'anime' (Canvas Paperdoll) | 'animex' (AI-Generated)
+let renderMode = localStorage.getItem('liquid_render_mode') || 'geometric';
 let canvas, ctx;
 
 // ─── CONNECTION FILTERS ──────────────────────────────────────────────────────
@@ -73,7 +74,7 @@ function handleSwarmUpdate(msg) {
 function handleBeaconUpdate(data) {
   const agentId = data.agent_id;
   
-  if (!useAnimeMode) {
+  if (renderMode === 'geometric') {
     const nodeSelection = svg.selectAll('.agent-node').filter(d => d.id === agentId);
     if (!nodeSelection.empty()) {
       const agentData = nodeSelection.data()[0];
@@ -96,7 +97,7 @@ async function loadSwarmData() {
       simulation.force('link').links(agentsData.edges);
       simulation.alpha(1).restart();
 
-      if (!useAnimeMode) {
+      if (renderMode === 'geometric') {
         node = node.data(agentsData.nodes, d => d.id).join('g')
           .attr('class', 'agent-node')
           .call(renderAvatar)
@@ -197,19 +198,19 @@ function computeDynamicsTransform(agent, time) {
   return { scale, rotation, opacity };
 }
 
-// ─── CANVAS RENDERING (Direct Drawing - High Quality Anime) ─────────────────
+// ─── CANVAS RENDERING (Direct Drawing - Paperdoll Anime) ─────────────────
 function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   const hue = agent.avatar?.base_hue ?? 180;
   const sat = agent.avatar?.saturation ?? 0.75;
   const complexity = agent.avatar?.shape_complexity ?? 5;
   const dynamics = agent.avatar?.dynamics_state || 'idle';
   
-  const r = size * 1.2; // Slightly smaller to ensure it fits
+  const r = size * 1.2;
   
   ctx.save();
   ctx.translate(x, y);
 
-  // 1. Soft glow/aura (drawn first, behind everything)
+  // 1. Soft glow/aura
   const glowGrad = ctx.createRadialGradient(0, 0, r * 0.3, 0, 0, r * 2.0);
   glowGrad.addColorStop(0, `hsla(${hue}, ${sat*100}%, 60%, 0.2)`);
   glowGrad.addColorStop(1, 'transparent');
@@ -218,7 +219,7 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   ctx.arc(0, 0, r * 2.0, 0, Math.PI * 2);
   ctx.fill();
 
-  // 2. Hair (drawn BEFORE face so it appears behind)
+  // 2. Hair (behind face)
   const hairColor = `hsl(${hue}, ${sat*70}%, 35%)`;
   const hairShadow = `hsl(${hue}, ${sat*60}%, 25%)`;
   const hairHighlight = `hsl(${hue}, ${sat*50}%, 50%)`;
@@ -278,7 +279,6 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
     ctx.arc(r * 0.75, r * 0.2, r * 0.28, 0, Math.PI * 2);
     ctx.fill();
     
-    // Ribbons
     ctx.fillStyle = `hsl(${(hue + 180) % 360}, ${sat*80}%, 50%)`;
     ctx.beginPath();
     ctx.moveTo(-r * 0.8, r * 0.08);
@@ -297,7 +297,7 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
     ctx.fill();
   }
 
-  // 3. Face base (drawn AFTER hair so it covers hair behind)
+  // 3. Face base
   const skinGrad = ctx.createRadialGradient(-r*0.25, -r*0.25, 0, 0, 0, r * 0.85);
   skinGrad.addColorStop(0, '#FFE8D6');
   skinGrad.addColorStop(0.5, '#FFD4C0');
@@ -324,13 +324,11 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
     ctx.translate(ex, eyeY);
     ctx.scale(1, eyeOpen);
     
-    // Eye white
     ctx.fillStyle = '#FFF';
     ctx.beginPath();
     ctx.ellipse(0, 0, r * 0.23, r * 0.27, 0, 0, Math.PI * 2);
     ctx.fill();
     
-    // Upper lash line
     ctx.strokeStyle = '#2a2a2a';
     ctx.lineWidth = 2.2;
     ctx.lineCap = 'round';
@@ -339,7 +337,6 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
     ctx.quadraticCurveTo(0, -r * 0.28, r * 0.25, 0);
     ctx.stroke();
     
-    // Iris
     const irisGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 0.2);
     irisGrad.addColorStop(0, eyeDark);
     irisGrad.addColorStop(0.5, eyeColor);
@@ -350,13 +347,11 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
     ctx.arc(0, 0, r * 0.2, 0, Math.PI * 2);
     ctx.fill();
     
-    // Pupil
     ctx.fillStyle = '#1a1a1a';
     ctx.beginPath();
     ctx.arc(0, 0, r * 0.09, 0, Math.PI * 2);
     ctx.fill();
     
-    // Eye shine
     ctx.fillStyle = 'rgba(255,255,255,0.95)';
     ctx.beginPath();
     ctx.arc(-r * 0.07, -r * 0.07, r * 0.07, 0, Math.PI * 2);
@@ -399,18 +394,16 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
 }
 
 function renderCanvasFrame() {
-  if (!ctx || !useAnimeMode) return;
+  if (!ctx || renderMode !== 'anime') return;
   
-  // Clear canvas completely
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = '#FFFFFF'; // White background
+  ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, width, height);
   
   agentsData.nodes.forEach(d => {
     if (!d.x || !d.y) return;
     
     const size = d.avatar?.size ?? 28;
-    // Draw with proper offset to ensure full face is visible
     drawAnimeFaceOnCanvas(ctx, d, d.x, d.y, size);
     
     if (showLabels) {
@@ -422,6 +415,70 @@ function renderCanvasFrame() {
   });
 
   animationFrame = requestAnimationFrame(renderCanvasFrame);
+}
+
+// ─── AI AVATAR RENDERING (AnimeX) ───────────────────────────────────────────
+async function renderAnimexFrame() {
+  if (!ctx || renderMode !== 'animex' || !window.AISystem?.initialized) return;
+  
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, width, height);
+  
+  // Process nodes in batches to avoid blocking the main thread
+  const batchSize = 10;
+  for (let i = 0; i < agentsData.nodes.length; i += batchSize) {
+    const batch = agentsData.nodes.slice(i, i + batchSize);
+    
+    for (const d of batch) {
+      if (!d.x || !d.y) continue;
+      
+      const size = d.avatar?.size ?? 30;
+      
+      // For Paperdoll provider, draw directly
+      if (window.AISystem?.provider === 'paperdoll') {
+        window.AISystem.draw(ctx, d, d.x, d.y, size);
+      } else {
+        // For remote providers, get cached/async image
+        const imgData = await window.AISystem.getAvatar(d);
+        
+        if (imgData) {
+          const img = new Image();
+          img.src = imgData;
+          if (img.complete) {
+            ctx.drawImage(img, d.x - size, d.y - size, size * 2, size * 2);
+          } else {
+            // Handle async load
+            img.onload = () => {
+              ctx.drawImage(img, d.x - size, d.y - size, size * 2, size * 2);
+            };
+          }
+        } else {
+          // Loading placeholder
+          ctx.fillStyle = '#E2E8F0';
+          ctx.beginPath();
+          ctx.arc(d.x, d.y, size * 0.8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#64748B';
+          ctx.font = '10px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText('AI...', d.x, d.y + 4);
+        }
+      }
+      
+      if (showLabels) {
+        ctx.fillStyle = '#64748b';
+        ctx.font = '11px "IBM Plex Mono"';
+        ctx.textAlign = 'center';
+        ctx.fillText(d.name, d.x, d.y + size * 2.2);
+      }
+    }
+    
+    // Yield to browser to maintain responsiveness
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  
+  animationFrame = requestAnimationFrame(renderAnimexFrame);
 }
 
 // ─── SVG RENDERING (Geometric - Fallback) ────────────────────────────────────
@@ -591,11 +648,20 @@ async function init() {
     renderOntology();
     renderDynamicsLegend();
     updateStats();
+    
+    // Initialize AI Avatar System
+    if (window.AISystem) {
+      await window.AISystem.init();
+    }
+    
     setupSimulation(width, height);
+    
+    // Start appropriate render loop
+    switchRenderEngine();
     
     connectSwarmWebSocket();
     initConnectionToggles();
-    updateAnimeToggleUI();
+    updateModeButton();
 
   } catch (err) {
     console.error('Failed to load swarm data:', err);
@@ -650,7 +716,7 @@ function setupSimulation(w, h) {
       metadata_match: '6,2,2,2'
     }[d.type] || '4,4'));
 
-  if (!useAnimeMode) {
+  if (renderMode === 'geometric') {
     node = g.append('g')
       .selectAll('g')
       .data(agentsData.nodes)
@@ -666,6 +732,7 @@ function setupSimulation(w, h) {
       .on('mouseover', (e, d) => showTooltip(e, d))
       .on('mouseout', hideTooltip);
   } else {
+    // Canvas click handling for anime/animex modes
     canvas.addEventListener('click', (e) => {
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
@@ -696,41 +763,58 @@ function setupSimulation(w, h) {
       .attr('x2', d => d.target.x)
       .attr('y2', d => d.target.y);
 
-    if (!useAnimeMode) {
+    if (renderMode === 'geometric') {
       node.attr('transform', d => `translate(${d.x},${d.y})`);
     }
   });
 }
 
 // ─── UI & TOGGLES ────────────────────────────────────────────────────────────
-function updateAnimeToggleUI() {
-  const btn = document.getElementById('anime-toggle');
-  if (btn) {
-    if (useAnimeMode) {
-      btn.style.background = 'var(--accent)';
-      btn.style.color = 'white';
-    } else {
-      btn.style.background = 'transparent';
-      btn.style.color = 'var(--text-primary)';
-    }
+function updateModeButton() {
+  const btn = document.getElementById('mode-toggle');
+  if (!btn) return;
+  
+  const labels = { geometric: 'GEOMETRIC', anime: 'ANIME', animex: 'ANIMEX' };
+  btn.textContent = labels[renderMode];
+  
+  if (renderMode === 'geometric') {
+    btn.style.background = 'transparent';
+    btn.style.color = 'var(--text-primary)';
+  } else {
+    btn.style.background = 'var(--accent)';
+    btn.style.color = 'white';
   }
 }
 
-function toggleAnimeMode() {
-  useAnimeMode = !useAnimeMode;
-  localStorage.setItem('liquid_anime_mode', useAnimeMode);
+function cycleRenderMode() {
+  const modes = ['geometric', 'anime', 'animex'];
+  const currentIdx = modes.indexOf(renderMode);
+  renderMode = modes[(currentIdx + 1) % modes.length];
+  localStorage.setItem('liquid_render_mode', renderMode);
   
-  updateAnimeToggleUI();
+  updateModeButton();
+  switchRenderEngine();
+}
+
+function switchRenderEngine() {
+  // Clear existing nodes/canvas
+  d3.selectAll('.agent-node').remove();
+  ctx.clearRect(0, 0, width, height);
   
-  if (useAnimeMode) {
-    d3.selectAll('.agent-node').remove();
+  if (renderMode === 'animex') {
+    canvas.style.display = 'block';
+    if (animationFrame) cancelAnimationFrame(animationFrame);
+    renderAnimexFrame();
+  } else if (renderMode === 'anime') {
     canvas.style.display = 'block';
     if (animationFrame) cancelAnimationFrame(animationFrame);
     renderCanvasFrame();
   } else {
+    // geometric mode
     canvas.style.display = 'none';
     if (animationFrame) cancelAnimationFrame(animationFrame);
     
+    // Rebuild SVG nodes
     node = g.append('g')
       .selectAll('g')
       .data(agentsData.nodes)
@@ -750,11 +834,10 @@ function toggleAnimeMode() {
 
 function toggleLabels() {
   showLabels = !showLabels;
-  if (useAnimeMode) {
-    // Canvas will pick up showLabels in next frame
-  } else {
+  if (renderMode === 'geometric') {
     node.call(renderAvatar);
   }
+  // Canvas modes pick up showLabels in next frame automatically
 }
 
 function resetZoom() {}
