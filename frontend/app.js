@@ -439,46 +439,51 @@ function renderCanvasFrame() {
 
 // ─── AI AVATAR RENDERING (AnimeX) ───────────────────────────────────────────
 async function renderAnimexFrame() {
-  if (!ctx || renderMode !== 'animex' || !window.AISystem?.initialized) return;
-
-  console.log('🎬 renderAnimexFrame running, provider:', AISystem.provider);
+  if (!ctx || renderMode !== 'animex') return;
+  
+  console.log('🎬 ANIMEX render loop started');
+  console.log('🤖 AISystem available:', !!window.AISystem);
+  if (window.AISystem) {
+    console.log('🤖 Provider:', AISystem.provider);
+    console.log('🤖 Initialized:', AISystem.initialized);
+  }
   
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, width, height);
   
   const renderableAgents = getRenderableAgents();
+  console.log(`🎨 Rendering ${renderableAgents.length} agents in ANIMEX mode`);
   
-  // Process nodes in batches to avoid blocking the main thread
-  const batchSize = 10;
-  for (let i = 0; i < renderableAgents.length; i += batchSize) {
-    const batch = renderableAgents.slice(i, i + batchSize);
+  for (const d of renderableAgents) {
+    if (!d.x || !d.y) continue;
     
-    for (const d of batch) {
-      if (!d.x || !d.y) continue;
-      
-      const size = d.avatar?.size ?? 30;
-      
-      // For Paperdoll provider, draw directly
-      if (window.AISystem?.provider === 'paperdoll') {
-        window.AISystem.draw(ctx, d, d.x, d.y, size);
-      } else {
-        // For remote providers, get cached/async image
+    const size = d.avatar?.size ?? 30;
+    
+    if (window.AISystem?.provider === 'paperdoll') {
+      // Local paperdoll rendering
+      window.AISystem.draw(ctx, d, d.x, d.y, size);
+      console.log(`✏️  Paperdoll rendered: ${d.id}`);
+    } else {
+      // Remote AI rendering
+      try {
         const imgData = await window.AISystem.getAvatar(d);
+        console.log(`📡 AI response for ${d.id}:`, imgData ? 'image received' : 'null/placeholder');
         
         if (imgData) {
           const img = new Image();
           img.src = imgData;
           if (img.complete) {
             ctx.drawImage(img, d.x - size, d.y - size, size * 2, size * 2);
+            console.log(`✅ Image drawn for ${d.id}`);
           } else {
-            // Handle async load
             img.onload = () => {
               ctx.drawImage(img, d.x - size, d.y - size, size * 2, size * 2);
+              console.log(`✅ Async image loaded for ${d.id}`);
             };
           }
         } else {
-          // Loading placeholder
+          // Placeholder
           ctx.fillStyle = '#E2E8F0';
           ctx.beginPath();
           ctx.arc(d.x, d.y, size * 0.8, 0, Math.PI * 2);
@@ -487,23 +492,24 @@ async function renderAnimexFrame() {
           ctx.font = '10px monospace';
           ctx.textAlign = 'center';
           ctx.fillText('AI...', d.x, d.y + 4);
+          console.log(`⏳ Placeholder shown for ${d.id}`);
         }
-      }
-      
-      if (showLabels) {
-        ctx.fillStyle = '#64748b';
-        ctx.font = '11px "IBM Plex Mono"';
-        ctx.textAlign = 'center';
-        ctx.fillText(d.name, d.x, d.y + size * 2.2);
+      } catch (err) {
+        console.error(`❌ AI render error for ${d.id}:`, err.message);
       }
     }
     
-    // Yield to browser to maintain responsiveness
-    await new Promise(resolve => setTimeout(resolve, 0));
+    if (showLabels) {
+      ctx.fillStyle = '#64748b';
+      ctx.font = '11px "IBM Plex Mono"';
+      ctx.textAlign = 'center';
+      ctx.fillText(d.name, d.x, d.y + size * 2.2);
+    }
   }
   
   animationFrame = requestAnimationFrame(renderAnimexFrame);
 }
+
 function forceAnimexProvider() {
   if (window.AISystem) {
     AISystem.switchProvider('openrouter'); // or 'minds_email'
@@ -687,11 +693,13 @@ async function init() {
     if (window.AISystem) {
       await window.AISystem.init();
     }
-    // Debug AI provider status
+    // Debug AISystem initialization
     if (window.AISystem) {
-      console.log('🤖 AISystem initialized');
-      console.log('🤖 Current provider:', AISystem.provider);
-      console.log('🤖 Provider config:', AI_CONFIG);
+      console.log('🤖 AISystem loaded');
+      console.log('🤖 Provider at init:', AISystem.provider);
+      console.log('🤖 Config:', JSON.stringify(AI_CONFIG));
+    } else {
+      console.error('❌ AISystem NOT loaded - check aiAvatarSystem.js import');
     }
 
     setupSimulation(width, height);
@@ -765,6 +773,7 @@ function setupSimulation(w, h) {
       metadata_match: '6,2,2,2'
     }[d.type] || '4,4'));
 
+  // SVG mode: attach click handlers directly
   if (renderMode === 'geometric') {
     node = g.append('g')
       .selectAll('g')
@@ -777,36 +786,41 @@ function setupSimulation(w, h) {
         .on('drag', dragged)
         .on('end', dragended));
 
-    node.on('click', (e, d) => selectAgent(d))
-      .on('mouseover', (e, d) => showTooltip(e, d))
-      .on('mouseout', hideTooltip);
-  } else {
-    // Canvas click handling for anime/animex modes
-    canvas.addEventListener('click', (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      
-      let closest = null;
-      let minDist = 40;
-
-      // Only check renderable agents for click detection
-      const renderableAgents = getRenderableAgents();
-      
-      renderableAgents.forEach(d => {
-        if (!d.x) return;
-        const dist = Math.hypot(d.x - x, d.y - y);
-        if (dist < minDist) {
-          minDist = dist;
-          closest = d;
-        }
-      });
-
-      if (closest) {
-        selectAgent(closest);
+    node.on('click', function(event, d) {
+      console.log('🖱️ SVG click:', d.id);
+      selectAgent(d);
+    })
+    .on('mouseover', (e, d) => showTooltip(e, d))
+    .on('mouseout', hideTooltip);
+  }
+  
+  // Canvas mode: attach single click handler to canvas element
+  canvas.onclick = function(e) {
+    if (renderMode === 'geometric') return; // Ignore clicks in SVG mode
+    
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    let closest = null;
+    let minDist = 40;
+    
+    const renderableAgents = getRenderableAgents();
+    
+    renderableAgents.forEach(d => {
+      if (!d.x) return;
+      const dist = Math.hypot(d.x - x, d.y - y);
+      if (dist < minDist) {
+        minDist = dist;
+        closest = d;
       }
     });
-  }
+
+    if (closest) {
+      console.log('🖱️ Canvas click:', closest.id);
+      selectAgent(closest);
+    }
+  };
 
   simulation.on('tick', () => {
     link

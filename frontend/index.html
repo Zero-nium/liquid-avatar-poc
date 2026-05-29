@@ -306,6 +306,20 @@
       main { grid-template-columns: 1fr; }
       .sidebar { display: none; }
       #canvas-container { grid-column: 1 / -1; }
+      
+    #swarm-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      pointer-events: auto; /* Ensure canvas receives clicks */
+      z-index: 1;
+    }
+    #swarm-svg {
+      position: absolute;
+      top: 0;
+      left: 0;
+      pointer-events: none; /* Let clicks pass through to canvas */
+      z-index: 2;
     }
   </style>
 </head>
