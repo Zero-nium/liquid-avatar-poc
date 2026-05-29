@@ -1051,3 +1051,9 @@ window.addEventListener('resize', () => {
 });
 
 document.addEventListener('DOMContentLoaded', init);
+
+// Debug: Verify functions are loaded
+console.log('✅ app.js loaded');
+console.log('✅ cycleRenderMode defined:', typeof cycleRenderMode === 'function');
+console.log('✅ updateModeButton defined:', typeof updateModeButton === 'function');
+console.log('✅ Current renderMode:', renderMode);
