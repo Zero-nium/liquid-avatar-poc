@@ -440,6 +440,8 @@ function renderCanvasFrame() {
 // ─── AI AVATAR RENDERING (AnimeX) ───────────────────────────────────────────
 async function renderAnimexFrame() {
   if (!ctx || renderMode !== 'animex' || !window.AISystem?.initialized) return;
+
+  console.log('🎬 renderAnimexFrame running, provider:', AISystem.provider);
   
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = '#FFFFFF';
@@ -501,6 +503,16 @@ async function renderAnimexFrame() {
   }
   
   animationFrame = requestAnimationFrame(renderAnimexFrame);
+}
+function forceAnimexProvider() {
+  if (window.AISystem) {
+    AISystem.switchProvider('openrouter'); // or 'minds_email'
+    console.log('🔄 Forced provider to:', AISystem.provider);
+    // Re-render if in animex mode
+    if (renderMode === 'animex') {
+      switchRenderEngine();
+    }
+  }
 }
 
 // ─── SVG RENDERING (Geometric - Fallback) ────────────────────────────────────
@@ -675,7 +687,13 @@ async function init() {
     if (window.AISystem) {
       await window.AISystem.init();
     }
-    
+    // Debug AI provider status
+    if (window.AISystem) {
+      console.log('🤖 AISystem initialized');
+      console.log('🤖 Current provider:', AISystem.provider);
+      console.log('🤖 Provider config:', AI_CONFIG);
+    }
+
     setupSimulation(width, height);
     
     // Start appropriate render loop
@@ -835,20 +853,32 @@ function switchRenderEngine() {
   d3.selectAll('.agent-node').remove();
   ctx.clearRect(0, 0, width, height);
   
+  // Remove old canvas click listener to avoid duplicates
+  canvas.replaceWith(canvas.cloneNode(true));
+  canvas = document.getElementById('swarm-canvas');
+  
   if (renderMode === 'animex') {
     canvas.style.display = 'block';
     if (animationFrame) cancelAnimationFrame(animationFrame);
+    
+    // Attach canvas click handler for animex
+    canvas.addEventListener('click', handleCanvasClick);
+    
     renderAnimexFrame();
   } else if (renderMode === 'anime') {
     canvas.style.display = 'block';
     if (animationFrame) cancelAnimationFrame(animationFrame);
+    
+    // Attach canvas click handler for anime
+    canvas.addEventListener('click', handleCanvasClick);
+    
     renderCanvasFrame();
   } else {
     // geometric mode
     canvas.style.display = 'none';
     if (animationFrame) cancelAnimationFrame(animationFrame);
     
-    // Rebuild SVG nodes
+    // Rebuild SVG nodes with click handlers
     node = g.append('g')
       .selectAll('g')
       .data(agentsData.nodes)
@@ -863,6 +893,32 @@ function switchRenderEngine() {
     node.on('click', (e, d) => selectAgent(d))
       .on('mouseover', (e, d) => showTooltip(e, d))
       .on('mouseout', hideTooltip);
+  }
+}
+
+// ─── CANVAS CLICK HANDLER (reusable) ───────────────────────────────────────
+function handleCanvasClick(e) {
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  
+  let closest = null;
+  let minDist = 40;
+  
+  const renderableAgents = getRenderableAgents();
+  
+  renderableAgents.forEach(d => {
+    if (!d.x) return;
+    const dist = Math.hypot(d.x - x, d.y - y);
+    if (dist < minDist) {
+      minDist = dist;
+      closest = d;
+    }
+  });
+
+  if (closest) {
+    console.log('🖱️  Canvas click detected:', closest.id);
+    selectAgent(closest);
   }
 }
 
