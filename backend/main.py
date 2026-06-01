@@ -3,7 +3,7 @@ Liquid Avatar PoC - Backend API
 FastAPI + SQLite/Pydantic + Optional Turso
 Free-tier optimized: single file, minimal deps, persistent storage ready.
 
-Schema v1.2: Expertise→Color, Role→Geometry, Activity→Dynamics
+Schema v1.3: OpenRouter Avatar Rendering + Persistent Cache
 Beacon Bridge: Dynamic agent discovery & real-time propagation
 """
 
@@ -27,6 +27,7 @@ import re
 import logging
 import sys
 import time
+import uuid
 
 # Import Minds gateway router (defined after app creation)
 from minds_gateway import router as minds_router
@@ -92,7 +93,7 @@ except ImportError as e:
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 
 DB_PATH = os.getenv("DB_PATH", "./liquid_avatar.db")
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"  # Updated for avatar rendering
 API_KEY = os.getenv("LIQUID_AVATAR_API_KEY", "dev-key-change-me-for-prod")
 
 TURSO_URL = os.getenv("TURSO_URL")
@@ -125,6 +126,7 @@ class RateLimiter:
 
 public_register_limit = RateLimiter(max_requests=5, window_seconds=60)
 agent_discover_limit = RateLimiter(max_requests=10, window_seconds=60)
+avatar_render_limit = RateLimiter(max_requests=3, window_seconds=300)  # 3 renders per 5 min
 
 # ─── DATA MODELS ──────────────────────────────────────────────────────────────
 
@@ -208,6 +210,10 @@ class MetadataItem(BaseModel):
     key: str = Field(..., min_length=1, max_length=50)
     value: str = Field(..., min_length=1, max_length=500)
     visibility: str = Field(default="public", pattern="^(public|cluster|private)$")
+
+class AvatarRenderRequest(BaseModel):
+    imageUrl: str
+    schemaSignature: Dict[str, Any]
 
 # ─── DATABASE UTILS (ASYNC) ───────────────────────────────────────────────────
 
@@ -309,17 +315,14 @@ async def init_db():
             FOREIGN KEY (source_id) REFERENCES agents(agent_id),
             FOREIGN KEY (target_id) REFERENCES agents(agent_id)
         )""",
-        # Turso-compatible agent_metadata (commented out for PoC)
-        # """CREATE TABLE IF NOT EXISTS agent_metadata (
-        #    id INTEGER PRIMARY KEY,
-        #    agent_id TEXT NOT NULL,
-        #    metadata_key TEXT NOT NULL,
-        #    metadata_value TEXT NOT NULL,
-        #    visibility TEXT DEFAULT 'public',
-        #    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        #    UNIQUE(agent_id, metadata_key),
-        #    FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
-        #)"""
+        """CREATE TABLE IF NOT EXISTS avatar_renders (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT UNIQUE NOT NULL,
+            image_url TEXT NOT NULL,
+            schema_signature TEXT NOT NULL,
+            rendered_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
+        )""",
     ]
     
     for stmt in tables:
@@ -361,7 +364,7 @@ async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficienc
 
     if agent_role:
         role_lower = agent_role.lower()
-        logger.info(f"Schema v1.2: Processing role '{role_lower}' for agent {agent_id}")
+        logger.info(f"Schema v1.3: Processing role '{role_lower}' for agent {agent_id}")
     
         council_shapes = {
             "conductor": 10, "auditor": 8, "architect": 6,
@@ -522,7 +525,7 @@ async def lifespan(app: FastAPI):
     log_agent_event(logger, "shutdown", "system", "Liquid Avatar API shutting down")
 
 # Create app instance FIRST
-app = FastAPI(title="Liquid Avatar", version="1.2", lifespan=lifespan)
+app = FastAPI(title="Liquid Avatar", version="1.3", lifespan=lifespan)
 
 # Add middleware
 app.add_middleware(
@@ -1425,7 +1428,7 @@ async def match_agents(key: str, value: str, limit: int = 10):
 @app.get("/avatar/schema")
 async def get_avatar_schema():
     return {
-        "version": "1.2",
+        "version": "1.3",
         "mapping_rules": {
             "color": {"source": "dominant proficiency category", "lookup": "ontology.domain → base_hue + spectrum"},
             "shape": {"source": "agent role", "mapping": {
@@ -1563,6 +1566,63 @@ async def delete_agent(agent_id: str):
     await broadcast_swarm_update("agent_removed", {"agent_id": agent_id})
     
     return {"status": "deleted", "agent_id": agent_id}
+
+# ─── AVATAR RENDERING CACHE ENDPOINTS ─────────────────────────────────────────
+
+@app.get("/api/avatars/{agent_id}")
+async def get_cached_avatar(agent_id: str):
+    """Get cached avatar render for agent."""
+    conn = await get_db()
+    render = await run_query(conn, 
+        "SELECT image_url, schema_signature, rendered_at FROM avatar_renders WHERE agent_id = ?",
+        (agent_id,), fetch="one")
+    await conn.close()
+    
+    if not render:
+        raise HTTPException(404, "No cached render found")
+    
+    return {
+        "imageUrl": render["image_url"],
+        "renderedAt": render["rendered_at"],
+        "schemaSignature": json.loads(render["schema_signature"])
+    }
+
+@app.post("/api/avatars/{agent_id}", dependencies=[Depends(verify_write_key)])
+async def store_avatar_render(agent_id: str, render_data: AvatarRenderRequest):
+    """Store rendered avatar (called after successful OpenRouter render)."""
+    conn = await get_db()
+    
+    # Verify agent exists
+    agent = await run_query(conn, "SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
+    if not agent:
+        await conn.close()
+        raise HTTPException(404, "Agent not found")
+    
+    # Upsert render
+    await run_query(conn, """
+        INSERT INTO avatar_renders (id, agent_id, image_url, schema_signature)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(agent_id) DO UPDATE SET 
+            image_url = excluded.image_url,
+            schema_signature = excluded.schema_signature,
+            rendered_at = CURRENT_TIMESTAMP
+    """, (f"render_{uuid.uuid4().hex}", agent_id, render_data.imageUrl, json.dumps(render_data.schemaSignature, sort_keys=True)))
+    
+    if hasattr(conn, 'commit'):
+        await conn.commit()
+    await conn.close()
+    
+    return {"status": "stored", "agent_id": agent_id}
+
+@app.delete("/api/avatars/{agent_id}", dependencies=[Depends(verify_write_key)])
+async def clear_cached_avatar(agent_id: str):
+    """Clear cached render (for testing)."""
+    conn = await get_db()
+    await run_query(conn, "DELETE FROM avatar_renders WHERE agent_id = ?", (agent_id,))
+    if hasattr(conn, 'commit'):
+        await conn.commit()
+    await conn.close()
+    return {"status": "cleared", "agent_id": agent_id}
 
 # ─── STATIC FILES ─────────────────────────────────────────────────────────────
 

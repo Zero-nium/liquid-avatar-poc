@@ -4,426 +4,84 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Liquid Avatar — Swarm Visualization</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@600&display=swap" rel="stylesheet">
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <style>
     :root {
-      --bg-primary: #FFFFFF;
-      --bg-surface: #F5F5F7;
-      --bg-panel: #EEEEF0;
-      --text-primary: #111111;
-      --text-secondary: #666666;
-      --text-muted: #999999;
-      --accent: #0066FF;
-      --border: #DDDDDF;
-      --glow: rgba(0, 102, 255, 0.1);
-      --font-mono: 'IBM Plex Mono', monospace;
-      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      --space-xs: 4px;
-      --space-sm: 8px;
-      --space-md: 16px;
-      --space-lg: 24px;
-      --space-xl: 32px;
-      --border-radius: 0;
-      --border-width: 1px;
+      --bg-primary: #fff; --bg-surface: #f5f5f7; --text-primary: #111; --text-secondary: #666;
+      --accent: #0066ff; --border: #ddd; --font-mono: 'IBM Plex Mono', monospace;
     }
-
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    
-    body {
-      font-family: var(--font-sans);
-      background: var(--bg-primary);
-      color: var(--text-primary);
-      line-height: 1.5;
-      overflow: hidden;
-      height: 100vh;
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-    }
-
-    header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: var(--space-md) var(--space-lg);
-      border-bottom: var(--border-width) solid var(--border);
-      background: var(--bg-surface);
-      font-family: var(--font-mono);
-      font-size: 11px;
-      letter-spacing: 0.5px;
-      text-transform: uppercase;
-    }
-
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: var(--space-sm);
-      font-weight: 600;
-    }
-
-    .brand-dot {
-      width: 8px;
-      height: 8px;
-      background: var(--accent);
-      border-radius: 50%;
-    }
-
-    .header-actions {
-      display: flex;
-      gap: var(--space-sm);
-      flex-wrap: wrap;
-    }
-
-    .btn {
-      background: transparent;
-      border: var(--border-width) solid var(--border);
-      color: var(--text-primary);
-      padding: var(--space-xs) var(--space-sm);
-      font-family: var(--font-mono);
-      font-size: 10px;
-      cursor: pointer;
-      transition: all 0.1s ease;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    .btn:hover {
-      background: var(--bg-panel);
-      border-color: var(--text-primary);
-    }
-
-    .btn-primary {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: white;
-    }
-
-    .btn-primary:hover {
-      opacity: 0.9;
-    }
-
-    main {
-      display: grid;
-      grid-template-columns: 280px 1fr 280px;
-      gap: var(--space-md);
-      padding: var(--space-md);
-      overflow: hidden;
-    }
-
-    .sidebar {
-      display: flex;
-      flex-direction: column;
-      gap: var(--space-md);
-      background: var(--bg-surface);
-      border: var(--border-width) solid var(--border);
-      padding: var(--space-md);
-      font-family: var(--font-mono);
-      font-size: 11px;
-      overflow-y: auto;
-    }
-
-    .sidebar-title {
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      padding-bottom: var(--space-sm);
-      border-bottom: var(--border-width) solid var(--border);
-      margin-bottom: var(--space-sm);
-    }
-
-    .stat-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: var(--space-sm);
-    }
-
-    .stat-item {
-      display: flex;
-      flex-direction: column;
-      gap: var(--space-xs);
-    }
-
-    .stat-label {
-      color: var(--text-secondary);
-      text-transform: uppercase;
-      font-size: 9px;
-      letter-spacing: 0.5px;
-    }
-
-    .stat-value {
-      font-weight: 600;
-      font-size: 14px;
-    }
-
-    .legend-item {
-      display: flex;
-      align-items: center;
-      gap: var(--space-sm);
-      padding: var(--space-xs) 0;
-    }
-
-    .legend-color {
-      width: 16px;
-      height: 16px;
-      border: var(--border-width) solid var(--border);
-      flex-shrink: 0;
-    }
-
-    .dynamics-badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 2px 6px;
-      border: var(--border-width) solid var(--border);
-      border-radius: 0;
-      font-size: 9px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      font-family: var(--font-mono);
-    }
-
-    .dynamics-idle { border-color: var(--text-muted); color: var(--text-muted); }
-    .dynamics-input { border-color: #00AA88; color: #00AA88; }
-    .dynamics-output { border-color: #FF6B35; color: #FF6B35; }
-    .dynamics-analysis { border-color: var(--accent); color: var(--accent); }
-    .dynamics-verification { border-color: #9333EA; color: #9333EA; }
-
-    .agent-details {
-      display: flex;
-      flex-direction: column;
-      gap: var(--space-sm);
-    }
-
-    .agent-name {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--text-primary);
-    }
-
-    .agent-meta {
-      color: var(--text-secondary);
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    .stat-row {
-      display: flex;
-      justify-content: space-between;
-      padding: var(--space-xs) 0;
-      border-bottom: var(--border-width) dashed var(--border);
-      font-size: 10px;
-    }
-
-    .stat-row:last-child { border-bottom: none; }
-
-    .stat-label { color: var(--text-secondary); }
-    .stat-value { font-weight: 500; }
-
-    #canvas-container {
-      position: relative;
-      background: var(--bg-primary);
-      border: var(--border-width) solid var(--border);
-      overflow: hidden;
-    }
-
-    #swarm-canvas {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      pointer-events: auto;
-      z-index: 1;
-      cursor: grab;
-    }
-    
-    #swarm-canvas:active {
-      cursor: grabbing;
-    }
-
-    #swarm-svg {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      pointer-events: none;
-      z-index: 2;
-    }
-
-    #tooltip {
-      position: fixed;
-      background: var(--bg-primary);
-      border: var(--border-width) solid var(--border);
-      padding: var(--space-sm);
-      font-family: var(--font-mono);
-      font-size: 10px;
-      pointer-events: none;
-      opacity: 0;
-      transition: opacity 0.1s ease;
-      z-index: 100;
-      max-width: 200px;
-      box-shadow: 0 4px 12px var(--glow);
-    }
-
+    body { font-family: Inter, sans-serif; background: var(--bg-primary); color: var(--text-primary); height: 100vh; display: grid; grid-template-rows: auto 1fr auto; overflow: hidden; }
+    header { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--bg-surface); font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; }
+    .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+    .brand-dot { width: 8px; height: 8px; background: var(--accent); border-radius: 50%; }
+    .header-actions { display: flex; gap: 8px; }
+    .btn { background: transparent; border: 1px solid var(--border); color: var(--text-primary); padding: 4px 8px; font-family: var(--font-mono); font-size: 10px; cursor: pointer; }
+    .btn:hover { background: #eee; }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: white; }
+    main { display: grid; grid-template-columns: 240px 1fr 240px; gap: 16px; padding: 16px; overflow: hidden; }
+    .sidebar { background: var(--bg-surface); border: 1px solid var(--border); padding: 16px; font-family: var(--font-mono); font-size: 11px; overflow-y: auto; }
+    .sidebar-title { font-weight: 600; text-transform: uppercase; padding-bottom: 8px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+    #canvas-container { position: relative; background: #fff; border: 1px solid var(--border); overflow: hidden; }
+    #swarm-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: auto; z-index: 1; cursor: grab; }
+    #swarm-canvas:active { cursor: grabbing; }
+    #swarm-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
+    #tooltip { position: fixed; background: #fff; border: 1px solid var(--border); padding: 8px; font-family: var(--font-mono); font-size: 10px; pointer-events: none; opacity: 0; transition: opacity 0.1s; z-index: 100; max-width: 200px; box-shadow: 0 4px 12px rgba(0,102,255,0.1); }
     #tooltip.visible { opacity: 1; }
-
-    .tooltip-header {
-      font-weight: 600;
-      margin-bottom: var(--space-xs);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    #loading {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--text-secondary);
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      z-index: 10;
-    }
-
-    footer {
-      padding: var(--space-sm) var(--space-lg);
-      border-top: var(--border-width) solid var(--border);
-      background: var(--bg-surface);
-      font-family: var(--font-mono);
-      font-size: 9px;
-      color: var(--text-muted);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    .footer-link {
-      color: var(--text-secondary);
-      text-decoration: none;
-    }
-
-    .footer-link:hover { color: var(--accent); }
-
-    @media (max-width: 1200px) {
-      main { grid-template-columns: 1fr; }
-      .sidebar { display: none; }
-      #canvas-container { grid-column: 1 / -1; }
-    }
+    #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
+    footer { padding: 8px 24px; border-top: 1px solid var(--border); background: var(--bg-surface); font-family: var(--font-mono); font-size: 9px; color: var(--text-secondary); display: flex; justify-content: space-between; }
+    @media (max-width: 1000px) { main { grid-template-columns: 1fr; } .sidebar { display: none; } }
   </style>
 </head>
 <body>
   <header>
-    <div class="brand">
-      <div class="brand-dot"></div>
-      <span>Liquid Avatar</span>
-    </div>
-    <div style="font-family: var(--font-mono); font-size: 10px;">
-      SWARM VISUALIZATION v1.2
-    </div>
+    <div class="brand"><div class="brand-dot"></div><span>Liquid Avatar</span></div>
+    <div style="font-family:var(--font-mono);font-size:10px">SWARM v1.3</div>
     <div class="header-actions">
       <button class="btn" id="mode-toggle" onclick="cycleRenderMode()">GEOMETRIC</button>
       <button class="btn" onclick="toggleLabels()">LABELS</button>
-      <button class="btn" onclick="resetZoom()">RESET</button>
-      <button class="btn btn-primary" onclick="refreshData()">REFRESH</button>
+      <button class="btn" onclick="clearAvatarCache()">🗑️ CLEAR CACHE</button>
+      <button class="btn btn-primary" onclick="location.reload()">REFRESH</button>
     </div>
   </header>
 
   <main>
-    <!-- Left Sidebar: Stats + Ontology + Connections -->
     <aside class="sidebar">
-      <div>
-        <div class="sidebar-title">Swarm Stats</div>
-        <div class="stat-grid">
-          <div class="stat-item">
-            <span class="stat-label">Total Agents</span>
-            <span class="stat-value" id="stat-count">–</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-label">Active Now</span>
-            <span class="stat-value" id="stat-active">–</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-label">Clusters</span>
-            <span class="stat-value" id="stat-clusters">–</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-label">Schema</span>
-            <span class="stat-value">v1.2</span>
-          </div>
-        </div>
+      <div class="sidebar-title">Swarm Stats</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div><div style="color:var(--text-secondary);font-size:9px">Total</div><div id="stat-count" style="font-weight:600;font-size:14px">–</div></div>
+        <div><div style="color:var(--text-secondary);font-size:9px">Active</div><div id="stat-active" style="font-weight:600;font-size:14px">–</div></div>
+        <div><div style="color:var(--text-secondary);font-size:9px">Clusters</div><div id="stat-clusters" style="font-weight:600;font-size:14px">–</div></div>
       </div>
-
-      <div>
-        <div class="sidebar-title">Ontology</div>
-        <div id="ontology-list"></div>
-      </div>
-
-      <div>
-        <div class="sidebar-title">Dynamics</div>
-        <div id="dynamics-legend"></div>
-      </div>
-
-      <div>
-        <div class="sidebar-title">Connections</div>
-        <div id="connection-toggles" style="display: flex; flex-direction: column; gap: 8px;">
-          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 10px;">
-            <input type="checkbox" checked data-conn="initialized" onchange="toggleConnection(this)">
-            <span style="width: 10px; height: 10px; background: #475569; border-radius: 50%;"></span>
-            Initialized
-          </label>
-          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 10px;">
-            <input type="checkbox" checked data-conn="cluster_peer" onchange="toggleConnection(this)">
-            <span style="width: 10px; height: 10px; background: #cbd5e1; border-radius: 50%;"></span>
-            Cluster Peers
-          </label>
-          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 10px;">
-            <input type="checkbox" data-conn="beacon_interaction" onchange="toggleConnection(this)">
-            <span style="width: 10px; height: 10px; background: #10b981; border-radius: 50%;"></span>
-            Beacon Interactions
-          </label>
-        </div>
-      </div>
+      <div class="sidebar-title" style="margin-top:16px">Ontology</div>
+      <div id="ontology-list"></div>
+      <div class="sidebar-title" style="margin-top:16px">Dynamics</div>
+      <div id="dynamics-legend"></div>
     </aside>
 
-    <!-- Center: Canvas + SVG Overlay -->
     <section id="canvas-container">
       <canvas id="swarm-canvas"></canvas>
       <svg id="swarm-svg"></svg>
       <div id="loading">Initializing swarm...</div>
     </section>
 
-    <!-- Right Sidebar: Selected Agent -->
     <aside class="sidebar">
       <div class="sidebar-title">Selected Agent</div>
-      <div id="agent-details" class="agent-details">
-        <div style="color: var(--text-muted); font-style: italic;">
-          Click an avatar to inspect
-        </div>
-      </div>
+      <div id="agent-details" style="color:var(--text-secondary);font-style:italic">Click an avatar to inspect</div>
     </aside>
   </main>
 
   <footer>
-    <div>
-      <a href="/avatar/schema" class="footer-link" target="_blank">Avatar Schema</a>
-      ·
-      <a href="/ontology" class="footer-link" target="_blank">Ontology</a>
-    </div>
-    <div>
-      Aura Quorum / Small Council · 
-      <a href="https://github.com/Zero-nium/liquid-avatar-poc" class="footer-link" target="_blank">GitHub</a>
-    </div>
+    <div><a href="/avatar/schema" style="color:var(--text-secondary);text-decoration:none">Schema</a> · <a href="/ontology" style="color:var(--text-secondary);text-decoration:none">Ontology</a></div>
+    <div>Aura Quorum · <a href="https://github.com/Zero-nium/liquid-avatar-poc" style="color:var(--text-secondary);text-decoration:none">GitHub</a></div>
   </footer>
 
   <div id="tooltip"></div>
   
-  <!-- Load AISystem FIRST so it attaches to window before app.js uses it -->
+  <!-- Load AISystem FIRST -->
   <script src="aiAvatarSystem.js"></script>
-  <!-- Then load main app -->
+  <!-- Then main app -->
   <script src="app.js"></script>
 </body>
 </html>
