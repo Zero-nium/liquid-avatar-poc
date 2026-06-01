@@ -1601,7 +1601,7 @@ Accessories: {accessories},
 Style: soft cel shading, clean linework, white background, no text, high quality
 """
 
-@@app.post("/api/avatars/{agent_id}/generate")
+@app.post("/api/avatars/{agent_id}/generate")
 async def generate_avatar(agent_id: str, mock: bool = False):
     """Generates and stores an avatar for the given agent using OpenRouter + HF."""
     
