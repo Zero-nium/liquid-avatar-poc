@@ -17,7 +17,6 @@ let showConnections = true;
 let width, height;
 
 // ─── RENDER MODE STATE ───────────────────────────────────────────────────────
-// Modes: 'geometric' (SVG) | 'anime' (Canvas Paperdoll) | 'animex' (AI-Generated)
 let renderMode = localStorage.getItem('liquid_render_mode') || 'geometric';
 let canvas, ctx;
 
@@ -119,17 +118,10 @@ async function loadSwarmData() {
 }
 
 // ─── AGENT FILTERING ─────────────────────────────────────────────────────────
-/**
- * Filter agents for rendering based on mode and registration status.
- * - Canvas modes (anime/animex): Only registered agents (no 'discovered_via_*' clusters)
- * - SVG mode: All agents (including discovered placeholders)
- */
 function getRenderableAgents() {
   if (renderMode === 'geometric') {
-    return agentsData.nodes; // Show all in SVG mode
+    return agentsData.nodes;
   }
-  
-  // Canvas modes: filter out discovered/unregistered agents
   return agentsData.nodes.filter(agent => {
     const cluster = agent.cluster || '';
     return !cluster.startsWith('discovered_via_');
@@ -216,7 +208,7 @@ function computeDynamicsTransform(agent, time) {
   return { scale, rotation, opacity };
 }
 
-// ─── CANVAS RENDERING (Direct Drawing - Paperdoll Anime) ─────────────────
+// ─── CANVAS RENDERING (Paperdoll Anime) ─────────────────
 function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   const hue = agent.avatar?.base_hue ?? 180;
   const sat = agent.avatar?.saturation ?? 0.75;
@@ -228,7 +220,7 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   ctx.save();
   ctx.translate(x, y);
 
-  // 1. Soft glow/aura
+  // Glow
   const glowGrad = ctx.createRadialGradient(0, 0, r * 0.3, 0, 0, r * 2.0);
   glowGrad.addColorStop(0, `hsla(${hue}, ${sat*100}%, 60%, 0.2)`);
   glowGrad.addColorStop(1, 'transparent');
@@ -237,7 +229,7 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   ctx.arc(0, 0, r * 2.0, 0, Math.PI * 2);
   ctx.fill();
 
-  // 2. Hair (behind face)
+  // Hair (behind)
   const hairColor = `hsl(${hue}, ${sat*70}%, 35%)`;
   const hairShadow = `hsl(${hue}, ${sat*60}%, 25%)`;
   const hairHighlight = `hsl(${hue}, ${sat*50}%, 50%)`;
@@ -268,7 +260,7 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   ctx.closePath();
   ctx.fill();
   
-  // Bangs/fringe
+  // Bangs
   ctx.beginPath();
   ctx.moveTo(-r * 0.55, -r * 0.2);
   ctx.quadraticCurveTo(-r * 0.2, -r * 0.05, 0, -r * 0.12);
@@ -279,7 +271,7 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   ctx.closePath();
   ctx.fill();
   
-  // Hair shine
+  // Shine
   ctx.fillStyle = hairHighlight;
   ctx.globalAlpha = 0.5;
   ctx.beginPath();
@@ -315,7 +307,7 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
     ctx.fill();
   }
 
-  // 3. Face base
+  // Face
   const skinGrad = ctx.createRadialGradient(-r*0.25, -r*0.25, 0, 0, 0, r * 0.85);
   skinGrad.addColorStop(0, '#FFE8D6');
   skinGrad.addColorStop(0.5, '#FFD4C0');
@@ -330,7 +322,7 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   ctx.closePath();
   ctx.fill();
 
-  // 4. Eyes
+  // Eyes
   const eyeColor = `hsl(${hue}, ${sat*100}%, 50%)`;
   const eyeDark = `hsl(${hue}, ${sat*100}%, 25%)`;
   const eyeY = -r * 0.1;
@@ -383,7 +375,7 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
     ctx.restore();
   });
 
-  // 5. Blush
+  // Blush
   ctx.fillStyle = `hsla(${(hue+15) % 360}, ${sat*90}%, 75%, 0.3)`;
   ctx.filter = 'blur(1px)';
   ctx.beginPath();
@@ -392,7 +384,7 @@ function drawAnimeFaceOnCanvas(ctx, agent, x, y, size) {
   ctx.fill();
   ctx.filter = 'none';
 
-  // 6. Mouth
+  // Mouth
   ctx.strokeStyle = '#C48B8B';
   ctx.lineWidth = 1.8;
   ctx.lineCap = 'round';
@@ -441,11 +433,24 @@ function renderCanvasFrame() {
 async function renderAnimexFrame() {
   if (!ctx || renderMode !== 'animex') return;
   
-  console.log('🎬 ANIMEX render loop started');
-  console.log('🤖 AISystem available:', !!window.AISystem);
-  if (window.AISystem) {
-    console.log('🤖 Provider:', AISystem.provider);
-    console.log('🤖 Initialized:', AISystem.initialized);
+  // Defensive: wait for AISystem
+  if (!window.AISystem) {
+    console.warn('⚠️ AISystem not ready, showing placeholders');
+    const renderableAgents = getRenderableAgents();
+    renderableAgents.forEach(d => {
+      if (!d.x || !d.y) return;
+      const size = d.avatar?.size ?? 30;
+      ctx.fillStyle = '#E2E8F0';
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, size * 0.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#64748B';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('AI...', d.x, d.y + 4);
+    });
+    animationFrame = requestAnimationFrame(renderAnimexFrame);
+    return;
   }
   
   ctx.clearRect(0, 0, width, height);
@@ -453,7 +458,6 @@ async function renderAnimexFrame() {
   ctx.fillRect(0, 0, width, height);
   
   const renderableAgents = getRenderableAgents();
-  console.log(`🎨 Rendering ${renderableAgents.length} agents in ANIMEX mode`);
   
   for (const d of renderableAgents) {
     if (!d.x || !d.y) continue;
@@ -461,29 +465,22 @@ async function renderAnimexFrame() {
     const size = d.avatar?.size ?? 30;
     
     if (window.AISystem?.provider === 'paperdoll') {
-      // Local paperdoll rendering
       window.AISystem.draw(ctx, d, d.x, d.y, size);
-      console.log(`✏️  Paperdoll rendered: ${d.id}`);
     } else {
-      // Remote AI rendering
       try {
         const imgData = await window.AISystem.getAvatar(d);
-        console.log(`📡 AI response for ${d.id}:`, imgData ? 'image received' : 'null/placeholder');
         
         if (imgData) {
           const img = new Image();
           img.src = imgData;
           if (img.complete) {
             ctx.drawImage(img, d.x - size, d.y - size, size * 2, size * 2);
-            console.log(`✅ Image drawn for ${d.id}`);
           } else {
             img.onload = () => {
               ctx.drawImage(img, d.x - size, d.y - size, size * 2, size * 2);
-              console.log(`✅ Async image loaded for ${d.id}`);
             };
           }
         } else {
-          // Placeholder
           ctx.fillStyle = '#E2E8F0';
           ctx.beginPath();
           ctx.arc(d.x, d.y, size * 0.8, 0, Math.PI * 2);
@@ -492,7 +489,6 @@ async function renderAnimexFrame() {
           ctx.font = '10px monospace';
           ctx.textAlign = 'center';
           ctx.fillText('AI...', d.x, d.y + 4);
-          console.log(`⏳ Placeholder shown for ${d.id}`);
         }
       } catch (err) {
         console.error(`❌ AI render error for ${d.id}:`, err.message);
@@ -510,18 +506,7 @@ async function renderAnimexFrame() {
   animationFrame = requestAnimationFrame(renderAnimexFrame);
 }
 
-function forceAnimexProvider() {
-  if (window.AISystem) {
-    AISystem.switchProvider('openrouter'); // or 'minds_email'
-    console.log('🔄 Forced provider to:', AISystem.provider);
-    // Re-render if in animex mode
-    if (renderMode === 'animex') {
-      switchRenderEngine();
-    }
-  }
-}
-
-// ─── SVG RENDERING (Geometric - Fallback) ────────────────────────────────────
+// ─── SVG RENDERING (Geometric) ────────────────────────────────────
 function renderAvatar(selection) {
   selection.each(function(d) {
     const el = d3.select(this);
@@ -689,36 +674,20 @@ async function init() {
     renderDynamicsLegend();
     updateStats();
     
-    // Initialize AI Avatar System
-    if (window.AISystem) {
-      await window.AISystem.init();
-    }
-    // Debug AISystem initialization
-    if (window.AISystem) {
-      console.log('🤖 AISystem loaded');
-      console.log('🤖 Provider at init:', AISystem.provider);
-      console.log('🤖 Config:', JSON.stringify(AI_CONFIG));
+    // Initialize AI Avatar System (if available)
+    if (typeof AISystem !== 'undefined' && AISystem.init) {
+      await AISystem.init();
+      console.log('🤖 AISystem initialized:', AISystem.provider);
     } else {
-      console.error('❌ AISystem NOT loaded - check aiAvatarSystem.js import');
+      console.log('ℹ️ AISystem not available (using geometric/paperdoll only)');
     }
-
-    setupSimulation(width, height);
     
-    // Start appropriate render loop
+    setupSimulation(width, height);
     switchRenderEngine();
     
     connectSwarmWebSocket();
     initConnectionToggles();
     updateModeButton();
-
-    // Backup click handler in case onclick attribute fails
-    const modeBtn = document.getElementById('mode-toggle');
-    if (modeBtn) {
-      modeBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        cycleRenderMode();
-      });
-    }
 
   } catch (err) {
     console.error('Failed to load swarm data:', err);
@@ -773,7 +742,7 @@ function setupSimulation(w, h) {
       metadata_match: '6,2,2,2'
     }[d.type] || '4,4'));
 
-  // SVG mode: attach click handlers directly
+  // ─── GEOMETRIC MODE: SVG with D3 interactions ──────────────────────────
   if (renderMode === 'geometric') {
     node = g.append('g')
       .selectAll('g')
@@ -786,17 +755,21 @@ function setupSimulation(w, h) {
         .on('drag', dragged)
         .on('end', dragended));
 
-    node.on('click', function(event, d) {
+    node.on('click', (event, d) => {
       console.log('🖱️ SVG click:', d.id);
       selectAgent(d);
     })
     .on('mouseover', (e, d) => showTooltip(e, d))
     .on('mouseout', hideTooltip);
+    
+    // Ensure canvas is hidden in geometric mode
+    canvas.style.display = 'none';
   }
-  
-  // Canvas mode: attach single click handler to canvas element
+
+  // ─── CANVAS MODES: Simple click handler ────────────────────────────────
+  // This handler works for both 'anime' and 'animex' modes
   canvas.onclick = function(e) {
-    if (renderMode === 'geometric') return; // Ignore clicks in SVG mode
+    if (renderMode === 'geometric') return;
     
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -863,36 +836,24 @@ function cycleRenderMode() {
 }
 
 function switchRenderEngine() {
-  // Clear existing nodes/canvas
+  // Clear existing
   d3.selectAll('.agent-node').remove();
   ctx.clearRect(0, 0, width, height);
-  
-  // Remove old canvas click listener to avoid duplicates
-  canvas.replaceWith(canvas.cloneNode(true));
-  canvas = document.getElementById('swarm-canvas');
   
   if (renderMode === 'animex') {
     canvas.style.display = 'block';
     if (animationFrame) cancelAnimationFrame(animationFrame);
-    
-    // Attach canvas click handler for animex
-    canvas.addEventListener('click', handleCanvasClick);
-    
     renderAnimexFrame();
   } else if (renderMode === 'anime') {
     canvas.style.display = 'block';
     if (animationFrame) cancelAnimationFrame(animationFrame);
-    
-    // Attach canvas click handler for anime
-    canvas.addEventListener('click', handleCanvasClick);
-    
     renderCanvasFrame();
   } else {
     // geometric mode
     canvas.style.display = 'none';
     if (animationFrame) cancelAnimationFrame(animationFrame);
     
-    // Rebuild SVG nodes with click handlers
+    // Rebuild SVG nodes with full interactions
     node = g.append('g')
       .selectAll('g')
       .data(agentsData.nodes)
@@ -904,35 +865,12 @@ function switchRenderEngine() {
         .on('drag', dragged)
         .on('end', dragended));
 
-    node.on('click', (e, d) => selectAgent(d))
-      .on('mouseover', (e, d) => showTooltip(e, d))
-      .on('mouseout', hideTooltip);
-  }
-}
-
-// ─── CANVAS CLICK HANDLER (reusable) ───────────────────────────────────────
-function handleCanvasClick(e) {
-  const rect = canvas.getBoundingClientRect();
-  const x = e.clientX - rect.left;
-  const y = e.clientY - rect.top;
-  
-  let closest = null;
-  let minDist = 40;
-  
-  const renderableAgents = getRenderableAgents();
-  
-  renderableAgents.forEach(d => {
-    if (!d.x) return;
-    const dist = Math.hypot(d.x - x, d.y - y);
-    if (dist < minDist) {
-      minDist = dist;
-      closest = d;
-    }
-  });
-
-  if (closest) {
-    console.log('🖱️  Canvas click detected:', closest.id);
-    selectAgent(closest);
+    node.on('click', (event, d) => {
+      console.log('🖱️ SVG click:', d.id);
+      selectAgent(d);
+    })
+    .on('mouseover', (e, d) => showTooltip(e, d))
+    .on('mouseout', hideTooltip);
   }
 }
 
@@ -941,7 +879,6 @@ function toggleLabels() {
   if (renderMode === 'geometric') {
     node.call(renderAvatar);
   }
-  // Canvas modes pick up showLabels in next frame automatically
 }
 
 function resetZoom() {}
@@ -1131,13 +1068,9 @@ window.addEventListener('resize', () => {
 
 document.addEventListener('DOMContentLoaded', init);
 
-// Debug: Verify functions are loaded
-console.log('✅ app.js loaded');
-console.log('✅ cycleRenderMode defined:', typeof cycleRenderMode === 'function');
-console.log('✅ updateModeButton defined:', typeof updateModeButton === 'function');
-console.log('✅ Current renderMode:', renderMode);
-
-// ─── FALLBACK ALIASES (for backward compatibility) ─────────────────────
+// ─── FALLBACK FOR BACKWARD COMPATIBILITY ───────────────────────────────────
 // Support old HTML references or cached JS
-window.toggleAnimeMode = cycleRenderMode;
-console.log('🔗 Fallback: toggleAnimeMode → cycleRenderMode');
+if (typeof window.toggleAnimeMode === 'undefined') {
+  window.toggleAnimeMode = cycleRenderMode;
+  console.log('🔗 Fallback: toggleAnimeMode → cycleRenderMode');
+}

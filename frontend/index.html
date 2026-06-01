@@ -72,6 +72,7 @@
     .header-actions {
       display: flex;
       gap: var(--space-sm);
+      flex-wrap: wrap;
     }
 
     .btn {
@@ -226,24 +227,29 @@
       overflow: hidden;
     }
 
+    #swarm-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: auto;
+      z-index: 1;
+      cursor: grab;
+    }
+    
+    #swarm-canvas:active {
+      cursor: grabbing;
+    }
+
     #swarm-svg {
       position: absolute;
       top: 0;
       left: 0;
       width: 100%;
       height: 100%;
-      pointer-events: none; /* Let clicks pass to canvas */
-    }
-
-    #swarm-canvas {
-      display: block;
-      width: 100%;
-      height: 100%;
-      cursor: grab;
-    }
-    
-    #swarm-canvas:active {
-      cursor: grabbing;
+      pointer-events: none;
+      z-index: 2;
     }
 
     #tooltip {
@@ -306,20 +312,6 @@
       main { grid-template-columns: 1fr; }
       .sidebar { display: none; }
       #canvas-container { grid-column: 1 / -1; }
-      
-    #swarm-canvas {
-      position: absolute;
-      top: 0;
-      left: 0;
-      pointer-events: auto; /* Ensure canvas receives clicks */
-      z-index: 1;
-    }
-    #swarm-svg {
-      position: absolute;
-      top: 0;
-      left: 0;
-      pointer-events: none; /* Let clicks pass through to canvas */
-      z-index: 2;
     }
   </style>
 </head>
@@ -337,7 +329,6 @@
       <button class="btn" onclick="toggleLabels()">LABELS</button>
       <button class="btn" onclick="resetZoom()">RESET</button>
       <button class="btn btn-primary" onclick="refreshData()">REFRESH</button>
-      <button class="btn" onclick="forceAnimexProvider()">Force AnimeX</button>
     </div>
   </header>
 
@@ -429,6 +420,10 @@
   </footer>
 
   <div id="tooltip"></div>
+  
+  <!-- Load AISystem FIRST so it attaches to window before app.js uses it -->
+  <script src="aiAvatarSystem.js"></script>
+  <!-- Then load main app -->
   <script src="app.js"></script>
 </body>
 </html>

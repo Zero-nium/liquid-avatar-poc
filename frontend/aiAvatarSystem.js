@@ -224,3 +224,7 @@ const savedProvider = localStorage.getItem('liquid_ai_provider');
 if (savedProvider) AISystem.provider = savedProvider;
 
 export default AISystem;
+
+// Attach to window for global access (bypass ES module scope)
+window.AISystem = AISystem;
+console.log('✅ AISystem attached to window');
