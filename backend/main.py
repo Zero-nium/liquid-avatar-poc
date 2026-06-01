@@ -97,6 +97,8 @@ DB_PATH = os.getenv("DB_PATH", "./liquid_avatar.db")
 SCHEMA_VERSION = "1.3"  # Updated for avatar rendering
 API_KEY = os.getenv("LIQUID_AVATAR_API_KEY", "dev-key-change-me-for-prod")
 
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
 TURSO_URL = os.getenv("TURSO_URL")
 TURSO_TOKEN = os.getenv("TURSO_TOKEN")
 USE_TURSO = LIBSQL_AVAILABLE and TURSO_URL and TURSO_TOKEN
@@ -1601,6 +1603,12 @@ Style: soft cel shading, clean linework, white background, no text, high quality
 
 @app.post("/api/avatars/{agent_id}/generate")
 async def generate_avatar(agent_id: str):
+
+        # Check if API key is configured
+    if not OPENROUTER_API_KEY:
+        logger.error("❌ OPENROUTER_API_KEY not configured in environment")
+        raise HTTPException(500, "OpenRouter API key not configured on server")
+        
     """Generates and stores an avatar for the given agent using OpenRouter + HF."""
     conn = await get_db()
     
