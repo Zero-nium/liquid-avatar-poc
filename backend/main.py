@@ -1601,89 +1601,86 @@ Accessories: {accessories},
 Style: soft cel shading, clean linework, white background, no text, high quality
 """
 
-@app.post("/api/avatars/{agent_id}/generate")
-async def generate_avatar(agent_id: str):
+@@app.post("/api/avatars/{agent_id}/generate")
+async def generate_avatar(agent_id: str, mock: bool = False):
     """Generates and stores an avatar for the given agent using OpenRouter + HF."""
     
-    # Debug: Log whether the global var is set
-    logger.info(f"🔑 OPENROUTER_API_KEY (global): {'SET' if OPENROUTER_API_KEY else 'NOT SET'}")
-    logger.info(f"🔑 OPENROUTER_API_KEY (env direct): {'SET' if os.getenv('OPENROUTER_API_KEY') else 'NOT SET'}")
-    
-    # NEW: Direct env access - no global variable dependency
     api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        logger.error("❌ OpenRouter API key not configured in environment")
-        raise HTTPException(500, "OpenRouter API key not configured on server")
-
-    # Optional debug log (only if key exists)
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(f"🔑 OpenRouter API key loaded for agent {agent_id}")
     
-    conn = await get_db()
-    
-    # 1. Check persistent cache first
-    cached = await run_query(conn, "SELECT image_url, schema_signature FROM avatar_renders WHERE agent_id = ?", (agent_id,), fetch="one")
-    if cached:
+    # Mock mode: return a placeholder SVG avatar
+    if mock or not api_key:
+        logger.warning(f"🎭 Mock mode for {agent_id} (no API key or mock=true)")
+        conn = await get_db()
+        
+        # Get agent data for placeholder
+        agent = await run_query(conn, "SELECT name, role FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
+        avatar_state = await run_query(conn, "SELECT base_hue, saturation, shape_complexity FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1", (agent_id,), fetch="one")
+        
+        # Generate simple SVG placeholder
+        hue = avatar_state["base_hue"] if avatar_state else 180
+        sat = avatar_state["saturation"] if avatar_state else 0.7
+        complexity = avatar_state["shape_complexity"] if avatar_state else 6
+        color = f"hsl({hue}, {sat*100}%, 55%)"
+        
+        svg = f'''<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <rect width="256" height="256" fill="{color}"/>
+  <text x="128" y="140" text-anchor="middle" font-size="24" fill="white" font-family="sans-serif">
+    {agent["name"][:10] if agent else "Avatar"}
+  </text>
+  <text x="128" y="170" text-anchor="middle" font-size="14" fill="white" font-family="sans-serif">
+    (mock)
+  </text>
+</svg>'''
+        
+        image_url = f"data:image/svg+xml;base64,{base64.b64encode(svg.encode()).decode()}"
+        
+        # Still cache it so frontend works
+        await run_query(conn, """
+            INSERT INTO avatar_renders (id, agent_id, image_url, schema_signature)
+            VALUES (?, ?, ?, ?)
+        """, (f"mock_{uuid.uuid4().hex}", agent_id, image_url, json.dumps({"mock": True})))
+        
+        if hasattr(conn, 'commit'): await conn.commit()
         await conn.close()
-        return {"imageUrl": cached["image_url"], "status": "cached"}
-    
-    # 2. Get agent data for prompt construction
-    agent = await run_query(conn, "SELECT * FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
-    avatar_state = await run_query(conn, "SELECT * FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1", (agent_id,), fetch="one")
-    
-    if not agent:
-        await conn.close()
-        raise HTTPException(404, "Agent not found")
-    
-    # 3. Build prompt based on agent attributes
-    hue = avatar_state["base_hue"] if avatar_state else 180
-    complexity = avatar_state["shape_complexity"] if avatar_state else 6
-    role = agent["role"] or "general"
-    dynamics = avatar_state["dynamics_state"] if avatar_state else "idle"
-    
-    hair_styles = {3: "short cropped", 5: "bob cut", 6: "medium length", 8: "long layered", 10: "elaborate braided", 12: "flowing twin tails"}
-    hair = hair_styles.get(complexity, "medium length")
-    
-    expressions = {"idle": "soft neutral", "output": "bright smile", "input": "focused gaze", "analysis": "thoughtful look"}
-    expr = expressions.get(dynamics, "soft neutral")
-    
-    prompt = AVATAR_PROMPT_TEMPLATE.format(
-        hair_style=hair,
-        hair_color=f"hsl({hue}, 70%, 40%)",
-        expression=expr,
-        accessories=f"role: {role}"
-    )
+        
+        return {"imageUrl": image_url, "status": "mock"} 
     
     # When making the OpenRouter call, use the resolved api_key:
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            # Refine prompt via LLM
-            refine_res = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",  # Use resolved key
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "meta-llama/llama-3.1-8b-instruct:free",
-                    "messages": [
-                        {"role": "system", "content": "Refine this prompt for Stable Diffusion. Output ONLY the prompt."}, 
-                        {"role": "user", "content": prompt}
-                    ],
-                    "max_tokens": 100
-                }
-            )
-            refined_prompt = refine_res.json()["choices"][0]["message"]["content"]
-            
-            # Generate image via Stable Diffusion
-            img_res = await client.post(
-                "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1",
-                headers={"Content-Type": "application/json"},
-                json={"inputs": refined_prompt, "parameters": {"width": 256, "height": 256}}
-            )
-            
-            if img_res.status_code != 200:
-                raise HTTPException(500, f"Image generation failed: {img_res.text}")
+    # Replace the OpenRouter+HF block with this for testing:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+        # Pollinations.ai requires URL-encoded prompt
+        safe_prompt = urllib.parse.quote(f"anime portrait, {AVATAR_PROMPT_TEMPLATE}, clean background")
+        img_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=256&height=256&nologo=true&seed={agent_id}"
+    
+        # Fetch the image
+        img_res = await client.get(img_url)
+        if img_res.status_code != 200:
+            raise HTTPException(500, f"Pollinations error: {img_res.status_code}")
+    
+        # Convert to base64 data URI
+        b64 = base64.b64encode(img_res.content).decode()
+        image_url = f"data:image/png;base64,{b64}"
+        
+        # Log the raw response for debugging
+        if refine_res.status_code != 200:
+            logger.error(f"❌ OpenRouter error {refine_res.status_code}: {refine_res.text}")
+            raise HTTPException(500, f"OpenRouter error: {refine_res.status_code} - {refine_res.text[:200]}")
+        
+        refined_prompt = refine_res.json()["choices"][0]["message"]["content"]
+        logger.info(f"✅ Refined prompt: {refined_prompt[:100]}...")
+        
+        # Generate image via Stable Diffusion
+        img_res = await client.post(
+            "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1",
+            headers={"Content-Type": "application/json"},
+            json={"inputs": refined_prompt, "parameters": {"width": 256, "height": 256}}
+        )
+        
+        if img_res.status_code != 200:
+            logger.error(f"❌ Hugging Face error {img_res.status_code}: {img_res.text}")
+            raise HTTPException(500, f"HF error: {img_res.status_code} - {img_res.text[:200]}")
+        
             
             # Convert binary to Base64 Data URI
             import base64
@@ -1704,6 +1701,12 @@ async def generate_avatar(agent_id: str):
     except Exception as e:
         await conn.close()
         logger.error(f"Avatar generation error for {agent_id}: {e}")
+        raise HTTPException(500, f"Generation error: {str(e)}")
+    except httpx.RequestError as e:
+        logger.error(f"❌ Network error calling external API: {type(e).__name__}: {str(e)}")
+        raise HTTPException(503, f"External service unavailable: {str(e)}")
+    except Exception as e:
+        logger.error(f"❌ Unexpected error in generate_avatar: {type(e).__name__}: {str(e)}", exc_info=True)
         raise HTTPException(500, f"Generation error: {str(e)}")
 
 @app.delete("/api/avatars/{agent_id}", dependencies=[Depends(verify_write_key)])
