@@ -1,6 +1,6 @@
 /**
 Liquid Avatar — Swarm Visualization Engine v1.3
-Rendering: D3.js Physics + SVG (Geometric) + Canvas (OpenRouter Anime)
+Hybrid Rendering: D3.js Physics + SVG (Geometric) + Canvas (OpenRouter Anime)
 */
 const API_BASE = window.location.origin.includes('localhost')
   ? 'http://localhost:8000'
@@ -16,7 +16,6 @@ let animationFrame;
 let width, height;
 
 // ─── RENDER MODE STATE ───────────────────────────────────────────────────────
-// Only two modes: 'geometric' (SVG) | 'anime' (Canvas + OpenRouter)
 let renderMode = localStorage.getItem('liquid_render_mode') || 'geometric';
 let canvas, ctx;
 
@@ -95,48 +94,147 @@ function getAgentColor(agent) {
   return hslToHex(hue, sat, 55);
 }
 
-// ─── GEOMETRY ────────────────────────────────────────────────────────────────
-function generatePolygon(cx, cy, r, sides, rotation = 0) {
+function getAgentGlow(agent) {
+  const hue = agent.avatar?.base_hue ?? 180;
+  const sat = Math.round((agent.avatar?.saturation ?? 0.8) * 100);
+  return hslToHex(hue, sat, 70);
+}
+
+// ─── GEOMETRY GENERATORS ──────────────────────────────────────────────────────
+function generatePolygon(cx, cy, r, sides, rotation = 0, vibration = 0) {
   const points = [];
   for (let i = 0; i < sides; i++) {
     const angle = (i * 2 * Math.PI / sides) + rotation - Math.PI / 2;
-    points.push([cx + r * Math.cos(angle), cy + r * Math.sin(angle)]);
+    const vibOffset = vibration * Math.sin(Date.now() * 0.005 + i);
+    points.push([cx + (r + vibOffset) * Math.cos(angle), cy + (r + vibOffset) * Math.sin(angle)]);
   }
   return points.map(p => p.join(',')).join(' ');
 }
 
-// ─── SVG RENDERING (Geometric) ───────────────────────────────────────────────
+// ─── SVG RENDERING (Geometric - Full Featured) ───────────────────────────────
 function renderAvatar(selection) {
   selection.each(function(d) {
     const el = d3.select(this);
     el.selectAll('*').remove();
+
+    const isDiscovered = d.cluster && d.cluster.startsWith('discovered_via_');
     
-    const isDiscovered = d.cluster?.startsWith('discovered_via_');
-    const color = isDiscovered ? '#cbd5e1' : getAgentColor(d);
-    const glow = isDiscovered ? '#94a3b8' : getAgentColor(d).replace('55', '70');
+    let color, glow, strokeDasharray, opacity;
+    
+    if (isDiscovered) {
+      color = '#cbd5e1';
+      glow = '#94a3b8';
+      strokeDasharray = '4,4';
+      opacity = 0.4;
+    } else {
+      color = getAgentColor(d);
+      glow = getAgentGlow(d);
+      strokeDasharray = 'none';
+      opacity = 0.9;
+    }
+
     const size = d.avatar?.size ?? 20;
     const sides = isDiscovered ? 5 : (d.avatar?.shape_complexity ?? 6);
+    const isCircle = sides >= 20;
+
+    const hoursSinceReport = d.last_reported 
+      ? (Date.now() - new Date(d.last_reported).getTime()) / 3600000 
+      : 0;
+    const blurAmount = Math.min(hoursSinceReport / 24, 3);
     
-    // Glow
-    el.append('circle').attr('r', size * 1.4).attr('fill', glow).attr('opacity', 0.1);
-    
-    // Shape
-    if (sides >= 20) {
-      el.append('circle').attr('r', size).attr('fill', color).attr('stroke', glow).attr('stroke-width', 2);
+    if (blurAmount > 0.5) {
+      el.attr('filter', `blur(${blurAmount}px)`);
+      el.append('circle').attr('r', size * 1.6).attr('fill', glow).attr('opacity', 0.04).attr('class', 'glow-outer');
+      el.append('circle').attr('r', size * 1.2).attr('fill', glow).attr('opacity', 0.08).attr('class', 'glow-inner');
     } else {
-      const points = generatePolygon(0, 0, size, sides);
-      el.append('polygon').attr('points', points).attr('fill', color).attr('stroke', glow).attr('stroke-width', 2);
+      el.append('circle').attr('r', size * 1.6).attr('fill', glow).attr('opacity', 0.08).attr('class', 'glow-outer');
+      el.append('circle').attr('r', size * 1.2).attr('fill', glow).attr('opacity', 0.15).attr('class', 'glow-inner');
     }
-    
-    // Labels
+
+    if (isCircle) {
+      el.append('circle')
+        .attr('r', size)
+        .attr('fill', color)
+        .attr('stroke', glow)
+        .attr('stroke-width', 2)
+        .attr('opacity', opacity)
+        .attr('class', 'avatar-shape');
+      
+      if (d.role === 'chronicler' && !isDiscovered) {
+        const coil = d3.arc().innerRadius(size * 0.3).outerRadius(size * 0.5).startAngle(0).endAngle(Math.PI * 1.5);
+        el.append('path').attr('d', coil).attr('fill', glow).attr('opacity', 0.6);
+      }
+    } else {
+      const vibration = (d.role === 'architect' && sides === 6 && !isDiscovered) ? 1.5 : 0;
+      const points = generatePolygon(0, 0, size, sides, 0, vibration);
+      
+      if (sides >= 10 && !isCircle && !isDiscovered) {
+        const inner = generatePolygon(0, 0, size * 0.5, sides);
+        el.append('polygon').attr('points', inner).attr('fill', 'none').attr('stroke', glow).attr('stroke-width', 1).attr('opacity', 0.4).attr('class', 'shape-detail');
+        for (let i = 0; i < sides; i++) {
+          const a = (i * 2 * Math.PI / sides) - Math.PI / 2;
+          el.append('circle').attr('cx', size * 0.7 * Math.cos(a)).attr('cy', size * 0.7 * Math.sin(a)).attr('r', 2).attr('fill', glow).attr('opacity', 0.6).attr('class', 'vertex-marker');
+        }
+      }
+      
+      el.append('polygon')
+        .attr('points', points)
+        .attr('fill', color)
+        .attr('stroke', glow)
+        .attr('stroke-width', 2)
+        .attr('opacity', opacity)
+        .attr('stroke-dasharray', strokeDasharray)
+        .attr('class', 'avatar-shape');
+      
+      if (!isDiscovered) {
+        if (d.role === 'architect' && sides === 6) {
+          for (let i = 1; i <= 2; i++) {
+            const inner = generatePolygon(0, 0, size * (i / 3), sides, 0, vibration * 0.5);
+            el.append('polygon').attr('points', inner).attr('fill', 'none').attr('stroke', glow).attr('stroke-width', 0.5).attr('opacity', 0.4);
+          }
+        } else if (d.role === 'optimizer' && sides === 3) {
+          el.append('polygon').attr('points', `0,${-size*0.3} ${size*0.15},0 ${-size*0.15},0`).attr('fill', 'rgba(0,0,0,0.3)');
+        } else if (d.role === 'auditor' && sides === 8) {
+          el.append('circle').attr('r', size * 0.35).attr('fill', 'none').attr('stroke', glow).attr('stroke-width', 1.5).attr('opacity', 0.6);
+        }
+      }
+    }
+
     if (showLabels) {
-      el.append('text').attr('dy', size + 14).attr('text-anchor', 'middle')
-        .attr('fill', '#64748b').attr('font-size', '9px').text(d.name);
+      el.append('text')
+        .attr('dy', size + 16)
+        .attr('text-anchor', 'middle')
+        .attr('fill', '#64748b')
+        .attr('font-family', "'IBM Plex Mono', monospace")
+        .attr('font-size', '9px')
+        .attr('font-weight', '500')
+        .attr('letter-spacing', '0.3px')
+        .text(d.name);
     }
     
-    // Discovered tooltip
+    if (d.last_beacon && !isDiscovered) {
+      const age = (Date.now() - new Date(d.last_beacon).getTime()) / 1000;
+      if (age < 300) {
+        const pulse = el.append('circle').attr('r', size * 2.2).attr('fill', 'none').attr('stroke', '#00FF9D').attr('stroke-width', 1.5).attr('stroke-dasharray', '4,4').attr('opacity', 0.6).attr('class', 'beacon-pulse');
+        const anim = () => pulse.transition().duration(2000).attr('r', size * 2.8).attr('opacity', 0).on('end', () => { pulse.attr('r', size * 2.2).attr('opacity', 0.6); anim(); });
+        anim();
+      }
+    }
+    
     if (isDiscovered) {
-      el.append('title').text(`${d.name}\nDiscovered - Click to claim`);
+      el.append('title').text(`${d.name}\nDiscovered via ${d.cluster.replace('discovered_via_', '')}\nClick to view details`);
+    }
+
+    if (d.cluster === 'discovered_via_ethoswarm') {
+      el.append('circle')
+        .attr('r', size * 1.3)
+        .attr('fill', 'none')
+        .attr('stroke', '#a78bfa')
+        .attr('stroke-width', 1)
+        .attr('opacity', 0.3)
+        .attr('class', 'ethoswarm-pulse')
+        .attr('stroke-dasharray', '2,4');
+      el.append('title').text(`${d.name}\nEthoswarm Agent\nOn-chain: ${d.metadata?.on_chain_id?.slice(0,10)}...`);
     }
   });
 }
@@ -263,9 +361,10 @@ function setupSimulation(w, h) {
     .attr('display', d => connectionFilters[d.type || 'cluster_peer'] ? 'inline' : 'none')
     .attr('stroke', d => ({ initialized: '#64748b', cluster_peer: '#94a3b8', beacon_interaction: '#10b981' }[d.type] || '#94a3b8'))
     .attr('stroke-opacity', d => d.type === 'cluster_peer' ? 0.4 : 0.7)
-    .attr('stroke-width', d => d.type === 'initialized' ? 1.5 : 1);
+    .attr('stroke-width', d => d.type === 'initialized' ? 1.5 : 1)
+    .attr('stroke-dasharray', d => ({ initialized: 'none', cluster_peer: '4,4', beacon_interaction: '2,3' }[d.type] || '4,4'));
   
-  // Geometric mode: SVG with interactions
+  // Geometric mode: SVG with full interactions
   if (renderMode === 'geometric') {
     node = g.append('g').selectAll('g').data(agentsData.nodes).join('g')
       .attr('class', 'agent-node')
@@ -392,6 +491,12 @@ async function selectAgent(agent) {
       <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border)">
         <span style="color:var(--text-secondary)">Shape</span><span>${agent.avatar?.shape_complexity ?? 6}-gon</span>
       </div>
+      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border)">
+        <span style="color:var(--text-secondary)">Size</span><span>${Math.round(agent.avatar?.size ?? 20)}px</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border)">
+        <span style="color:var(--text-secondary)">Pulse</span><span>${(agent.avatar?.pulse_rate ?? 1.0).toFixed(2)}x</span>
+      </div>
       ${isDiscovered ? `
         <div style="margin-top:20px;padding:16px;background:linear-gradient(135deg,#f0f9ff,#e0f2fe);border:1px solid #bae6fd;border-radius:8px">
           <div style="font-size:12px;font-weight:600;color:#0369a1;margin-bottom:8px;text-transform:uppercase">Claim This Avatar</div>
@@ -424,7 +529,9 @@ async function selectAgent(agent) {
 
 function showTooltip(event, agent) {
   const tooltip = document.getElementById('tooltip');
-  tooltip.innerHTML = `<div style="font-weight:600;color:${getAgentColor(agent)}">${agent.name}</div><div style="color:#94a3b8;font-size:11px">${agent.role} · ${agent.avatar?.dynamics_state || 'idle'}</div>`;
+  const color = getAgentColor(agent);
+  
+  tooltip.innerHTML = `<div style="font-weight:600;color:${color}">${agent.name}</div><div style="color:#94a3b8;font-size:11px">${agent.role} · ${agent.avatar?.dynamics_state || 'idle'}</div>`;
   tooltip.style.left = (event.pageX + 16) + 'px';
   tooltip.style.top = (event.pageY + 16) + 'px';
   tooltip.classList.add('visible');
