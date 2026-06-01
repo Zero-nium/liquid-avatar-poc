@@ -28,6 +28,7 @@ import logging
 import sys
 import time
 import uuid
+import httpx
 
 # Import Minds gateway router (defined after app creation)
 from minds_gateway import router as minds_router
@@ -1587,32 +1588,100 @@ async def get_cached_avatar(agent_id: str):
         "schemaSignature": json.loads(render["schema_signature"])
     }
 
-@app.post("/api/avatars/{agent_id}", dependencies=[Depends(verify_write_key)])
-async def store_avatar_render(agent_id: str, render_data: AvatarRenderRequest):
-    """Store rendered avatar (called after successful OpenRouter render)."""
+# ─── AVATAR GENERATION (OpenRouter) ────────────────────────────────────────
+
+# COUNCIL: Update this template to refine the avatar style
+AVATAR_PROMPT_TEMPLATE = """
+Anime avatar portrait, chibi style, 
+Hair: {hair_style} colored {hair_color},
+Expression: {expression},
+Accessories: {accessories},
+Style: soft cel shading, clean linework, white background, no text, high quality
+"""
+
+@app.post("/api/avatars/{agent_id}/generate")
+async def generate_avatar(agent_id: str):
+    """Generates and stores an avatar for the given agent using OpenRouter + HF."""
     conn = await get_db()
     
-    # Verify agent exists
-    agent = await run_query(conn, "SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
+    # 1. Check persistent cache first
+    cached = await run_query(conn, "SELECT image_url, schema_signature FROM avatar_renders WHERE agent_id = ?", (agent_id,), fetch="one")
+    if cached:
+        await conn.close()
+        return {"imageUrl": cached["image_url"], "status": "cached"}
+    
+    # 2. Get agent data for prompt construction
+    agent = await run_query(conn, "SELECT * FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
+    avatar_state = await run_query(conn, "SELECT * FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1", (agent_id,), fetch="one")
+    
     if not agent:
         await conn.close()
         raise HTTPException(404, "Agent not found")
     
-    # Upsert render
-    await run_query(conn, """
-        INSERT INTO avatar_renders (id, agent_id, image_url, schema_signature)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(agent_id) DO UPDATE SET 
-            image_url = excluded.image_url,
-            schema_signature = excluded.schema_signature,
-            rendered_at = CURRENT_TIMESTAMP
-    """, (f"render_{uuid.uuid4().hex}", agent_id, render_data.imageUrl, json.dumps(render_data.schemaSignature, sort_keys=True)))
+    # 3. Build prompt based on agent attributes
+    hue = avatar_state["base_hue"] if avatar_state else 180
+    complexity = avatar_state["shape_complexity"] if avatar_state else 6
+    role = agent["role"] or "general"
+    dynamics = avatar_state["dynamics_state"] if avatar_state else "idle"
     
-    if hasattr(conn, 'commit'):
-        await conn.commit()
-    await conn.close()
+    hair_styles = {3: "short cropped", 5: "bob cut", 6: "medium length", 8: "long layered", 10: "elaborate braided", 12: "flowing twin tails"}
+    hair = hair_styles.get(complexity, "medium length")
     
-    return {"status": "stored", "agent_id": agent_id}
+    expressions = {"idle": "soft neutral", "output": "bright smile", "input": "focused gaze", "analysis": "thoughtful look"}
+    expr = expressions.get(dynamics, "soft neutral")
+    
+    prompt = AVATAR_PROMPT_TEMPLATE.format(
+        hair_style=hair,
+        hair_color=f"hsl({hue}, 70%, 40%)",
+        expression=expr,
+        accessories=f"role: {role}"
+    )
+    
+    # 4. Call OpenRouter (Refine) + Hugging Face (Generate)
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # Refine prompt via LLM
+            refine_res = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "meta-llama/llama-3.1-8b-instruct:free",
+                    "messages": [{"role": "system", "content": "Refine this prompt for Stable Diffusion. Output ONLY the prompt."}, {"role": "user", "content": prompt}],
+                    "max_tokens": 100
+                }
+            )
+            refined_prompt = refine_res.json()["choices"][0]["message"]["content"]
+            
+            # Generate image via Stable Diffusion
+            img_res = await client.post(
+                "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1",
+                headers={"Content-Type": "application/json"},
+                json={"inputs": refined_prompt, "parameters": {"width": 256, "height": 256}}
+            )
+            
+            if img_res.status_code != 200:
+                raise HTTPException(500, f"Image generation failed: {img_res.text}")
+            
+            # Convert binary to Base64 Data URI
+            import base64
+            b64 = base64.b64encode(img_res.content).decode()
+            image_url = f"data:image/png;base64,{b64}"
+            
+            # 5. Save to persistent DB
+            await run_query(conn, """
+                INSERT INTO avatar_renders (id, agent_id, image_url, schema_signature)
+                VALUES (?, ?, ?, ?)
+            """, (f"render_{uuid.uuid4().hex}", agent_id, image_url, json.dumps({"hue": hue, "complexity": complexity})))
+            
+            if hasattr(conn, 'commit'): await conn.commit()
+            await conn.close()
+            
+            return {"imageUrl": image_url, "status": "generated"}
+            
+    except Exception as e:
+        await conn.close()
+        logger.error(f"Avatar generation error for {agent_id}: {e}")
+        raise HTTPException(500, f"Generation error: {str(e)}")
 
 @app.delete("/api/avatars/{agent_id}", dependencies=[Depends(verify_write_key)])
 async def clear_cached_avatar(agent_id: str):
