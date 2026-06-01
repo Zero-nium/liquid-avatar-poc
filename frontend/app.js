@@ -369,18 +369,35 @@ function setupSimulation(w, h) {
     node = g.append('g').selectAll('g').data(agentsData.nodes).join('g')
       .attr('class', 'agent-node')
       .call(renderAvatar)
-      .call(d3.drag().on('start', dragstarted).on('drag', dragged).on('end', dragended));
+      .call(d3.drag()
+        .on('start', dragstarted)
+        .on('drag', dragged)
+        .on('end', dragended));
     
-    node.on('click', (e, d) => selectAgent(d))
-        .on('mouseover', (e, d) => showTooltip(e, d))
-        .on('mouseout', hideTooltip);
+    node.on('click', function(event, d) {
+      console.log('🖱️ SVG node clicked:', d.id);
+      selectAgent(d);
+    })
+    .on('mouseover', (e, d) => showTooltip(e, d))
+    .on('mouseout', hideTooltip);
     
+    // Ensure SVG receives pointer events, canvas does not
+    svg.style('pointer-events', 'auto');
+    canvas.style.pointerEvents = 'none';
     canvas.style.display = 'none';
+  } else {
+    // Anime mode: canvas receives events
+    svg.style('pointer-events', 'none');
+    canvas.style.pointerEvents = 'auto';
+    canvas.style.display = 'block';
   }
   
-  // Canvas click handler for anime mode
+  // Canvas click handler for anime mode only
   canvas.onclick = (e) => {
-    if (renderMode === 'geometric') return;
+    if (renderMode === 'geometric') {
+      console.log('⚠️ Canvas click blocked in geometric mode');
+      return;
+    }
     
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -393,7 +410,10 @@ function setupSimulation(w, h) {
       if (dist < minDist) { minDist = dist; closest = d; }
     });
     
-    if (closest) selectAgent(closest);
+    if (closest) {
+      console.log('🖱️ Canvas click:', closest.id);
+      selectAgent(closest);
+    }
   };
   
   simulation.on('tick', () => {
@@ -403,6 +423,41 @@ function setupSimulation(w, h) {
       node.attr('transform', d => `translate(${d.x},${d.y})`);
     }
   });
+}
+
+function switchRenderEngine() {
+  d3.selectAll('.agent-node').remove();
+  ctx.clearRect(0, 0, width, height);
+  
+  if (renderMode === 'anime') {
+    canvas.style.display = 'block';
+    canvas.style.pointerEvents = 'auto';
+    svg.style('pointer-events', 'none');
+    
+    if (animationFrame) cancelAnimationFrame(animationFrame);
+    renderAnimeFrame();
+  } else {
+    canvas.style.display = 'none';
+    canvas.style.pointerEvents = 'none';
+    svg.style('pointer-events', 'auto');
+    
+    if (animationFrame) cancelAnimationFrame(animationFrame);
+    
+    node = g.append('g').selectAll('g').data(agentsData.nodes).join('g')
+      .attr('class', 'agent-node')
+      .call(renderAvatar)
+      .call(d3.drag()
+        .on('start', dragstarted)
+        .on('drag', dragged)
+        .on('end', dragended));
+    
+    node.on('click', function(event, d) {
+      console.log('🖱️ SVG node clicked:', d.id);
+      selectAgent(d);
+    })
+    .on('mouseover', (e, d) => showTooltip(e, d))
+    .on('mouseout', hideTooltip);
+  }
 }
 
 // ─── UI TOGGLES ──────────────────────────────────────────────────────────────
