@@ -97,7 +97,7 @@ DB_PATH = os.getenv("DB_PATH", "./liquid_avatar.db")
 SCHEMA_VERSION = "1.3"  # Updated for avatar rendering
 API_KEY = os.getenv("LIQUID_AVATAR_API_KEY", "dev-key-change-me-for-prod")
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+# OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 TURSO_URL = os.getenv("TURSO_URL")
 TURSO_TOKEN = os.getenv("TURSO_TOKEN")
@@ -1609,11 +1609,15 @@ async def generate_avatar(agent_id: str):
     logger.info(f"🔑 OPENROUTER_API_KEY (global): {'SET' if OPENROUTER_API_KEY else 'NOT SET'}")
     logger.info(f"🔑 OPENROUTER_API_KEY (env direct): {'SET' if os.getenv('OPENROUTER_API_KEY') else 'NOT SET'}")
     
-    # Safety: Use global var if available, else fetch directly from env
-    api_key = OPENROUTER_API_KEY or os.getenv("OPENROUTER_API_KEY")
+    # NEW: Direct env access - no global variable dependency
+    api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        logger.error("❌ OpenRouter API key not configured in any form")
+        logger.error("❌ OpenRouter API key not configured in environment")
         raise HTTPException(500, "OpenRouter API key not configured on server")
+
+    # Optional debug log (only if key exists)
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(f"🔑 OpenRouter API key loaded for agent {agent_id}")
     
     conn = await get_db()
     
