@@ -1649,18 +1649,18 @@ async def generate_avatar(agent_id: str, mock: bool = False):
     try:
     # Replace the OpenRouter+HF block with this for testing:
         async with httpx.AsyncClient(timeout=30.0) as client:
-        # Pollinations.ai requires URL-encoded prompt
-        safe_prompt = urllib.parse.quote(f"anime portrait, {AVATAR_PROMPT_TEMPLATE}, clean background")
-        img_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=256&height=256&nologo=true&seed={agent_id}"
+            # Pollinations.ai requires URL-encoded prompt
+            safe_prompt = urllib.parse.quote(f"anime portrait, {AVATAR_PROMPT_TEMPLATE}, clean background")
+            img_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=256&height=256&nologo=true&seed={agent_id}"
     
-        # Fetch the image
-        img_res = await client.get(img_url)
-        if img_res.status_code != 200:
-            raise HTTPException(500, f"Pollinations error: {img_res.status_code}")
+            # Fetch the image
+            img_res = await client.get(img_url)
+            if img_res.status_code != 200:
+                raise HTTPException(500, f"Pollinations error: {img_res.status_code}")
     
-        # Convert to base64 data URI
-        b64 = base64.b64encode(img_res.content).decode()
-        image_url = f"data:image/png;base64,{b64}"
+            # Convert to base64 data URI
+            b64 = base64.b64encode(img_res.content).decode()
+            image_url = f"data:image/png;base64,{b64}"
         
         # Log the raw response for debugging
         if refine_res.status_code != 200:
