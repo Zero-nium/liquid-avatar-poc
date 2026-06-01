@@ -3,7 +3,7 @@ Liquid Avatar PoC - Backend API
 FastAPI + SQLite/Pydantic + Optional Turso
 Free-tier optimized: single file, minimal deps, persistent storage ready.
 
-Schema v1.3: Avatar Rendering via Pollinations.ai + Persistent Cache
+Schema v1.3: Avatar Rendering with Rate Limiting + Fallback
 Beacon Bridge: Dynamic agent discovery & real-time propagation
 """
 
@@ -107,6 +107,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(os.path.dirname(BASE_DIR), "frontend")
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+# Rate limiting for avatar generation (Pollinations.ai free tier: 1 concurrent)
+AVATAR_GENERATION_LOCK = asyncio.Lock()
+LAST_GENERATION_TIME = 0
+MIN_GENERATION_INTERVAL = 2.0  # seconds between requests
 
 # ─── RATE LIMITING ────────────────────────────────────────────────────────────
 
@@ -1590,7 +1595,61 @@ async def get_cached_avatar(agent_id: str):
         "schemaSignature": json.loads(render["schema_signature"])
     }
 
-# ─── AVATAR GENERATION (Pollinations.ai) ─────────────────────────────────────
+# ─── AVATAR GENERATION HELPERS ────────────────────────────────────────────────
+
+def generate_local_avatar_svg(agent_id: str, hue: float, sat: float, complexity: int, name: str = "Agent") -> str:
+    """Generate a local SVG avatar as fallback when external service fails."""
+    color = f"hsl({hue}, {sat*100}%, 55%)"
+    
+    # Generate polygon points based on complexity
+    points = []
+    for i in range(complexity):
+        angle = (i * 2 * 3.14159 / complexity) - 1.5708
+        x = 128 + 80 * 0.9 * 3.14159/180 * 3.14159 * 3.14159
+        y = 128 + 80 * 0.9
+        points.append(f"{x},{y}")
+    
+    if complexity >= 10:
+        shape = f'<circle cx="128" cy="128" r="80" fill="{color}" stroke="white" stroke-width="3"/>'
+    else:
+        shape = f'<polygon points="{" ".join(points)}" fill="{color}" stroke="white" stroke-width="3"/>'
+    
+    svg = f'''<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="grad_{agent_id[:8]}" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:{color}"/>
+      <stop offset="100%" style="stop-color:hsl({(hue+30)%360}, {sat*100}%, 40%)"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" fill="url(#grad_{agent_id[:8]})"/>
+  {shape}
+  <circle cx="128" cy="128" r="30" fill="white" opacity="0.2"/>
+  <text x="128" y="220" text-anchor="middle" font-size="14" fill="white" font-family="sans-serif">
+    {name[:15]}
+  </text>
+  <text x="128" y="240" text-anchor="middle" font-size="10" fill="rgba(255,255,255,0.7)">
+    (local)
+  </text>
+</svg>'''
+    
+    return svg
+
+async def wait_for_rate_limit():
+    """Enforce rate limiting for Pollinations.ai (1 request at a time)."""
+    global LAST_GENERATION_TIME
+    
+    async with AVATAR_GENERATION_LOCK:
+        now = time.time()
+        time_since_last = now - LAST_GENERATION_TIME
+        
+        if time_since_last < MIN_GENERATION_INTERVAL:
+            wait_time = MIN_GENERATION_INTERVAL - time_since_last
+            logger.info(f"⏳ Rate limit: waiting {wait_time:.1f}s before next request")
+            await asyncio.sleep(wait_time)
+        
+        LAST_GENERATION_TIME = time.time()
+
+# ─── AVATAR GENERATION (Pollinations.ai with Rate Limiting & Fallback) ───────
 
 # COUNCIL: Update this template to refine the avatar style
 AVATAR_PROMPT_TEMPLATE = """
@@ -1602,8 +1661,15 @@ Style: soft cel shading, clean linework, white background, no text, high quality
 """
 
 @app.post("/api/avatars/{agent_id}/generate")
-async def generate_avatar(agent_id: str, mock: bool = False):
-    """Generates and stores an avatar for the given agent using Pollinations.ai."""
+async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool = True):
+    """
+    Generates and stores an avatar for the given agent.
+    
+    Args:
+        agent_id: UUID of the agent
+        mock: If True, return a simple placeholder
+        use_fallback: If True, fall back to local SVG generation if external service fails
+    """
     
     conn = await get_db()
     
@@ -1644,48 +1710,125 @@ async def generate_avatar(agent_id: str, mock: bool = False):
         accessories=f"role: {role}"
     )
     
-    try:
-        # Use Pollinations.ai for image generation (free, no API key, globally accessible)
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            # Pollinations.ai requires URL-encoded prompt
-            safe_prompt = urllib.parse.quote(f"anime portrait, {prompt}, clean background, high quality")
-            img_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=256&height=256&nologo=true&seed={agent_id}"
-            
-            logger.info(f"🎨 Fetching avatar from Pollinations.ai for {agent_id}: {img_url[:100]}...")
-            
-            # Fetch the image
-            img_res = await client.get(img_url)
-            if img_res.status_code != 200:
-                logger.error(f"❌ Pollinations.ai error {img_res.status_code}: {img_res.text[:200]}")
-                raise HTTPException(500, f"Image generation failed: {img_res.status_code}")
-            
-            # Convert to base64 data URI
-            b64 = base64.b64encode(img_res.content).decode()
-            image_url = f"data:image/png;base64,{b64}"
-            
-            # Save to persistent DB
-            await run_query(conn, """
-                INSERT INTO avatar_renders (id, agent_id, image_url, schema_signature, rendered_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (f"render_{uuid.uuid4().hex}", agent_id, image_url, 
-                  json.dumps({"hue": hue, "complexity": complexity, "source": "pollinations"}),
-                  datetime.now(timezone.utc).isoformat()))
-            
-            if hasattr(conn, 'commit'):
-                await conn.commit()
-            await conn.close()
-            
-            logger.info(f"✅ Avatar generated and cached for {agent_id}")
-            return {"imageUrl": image_url, "status": "generated"}
-            
-    except httpx.RequestError as e:
+    # Mock mode: return simple SVG
+    if mock:
+        logger.warning(f"🎭 Mock mode for {agent_id}")
+        svg = generate_local_avatar_svg(agent_id, hue, 0.7, complexity, agent["name"])
+        image_url = f"data:image/svg+xml;base64,{base64.b64encode(svg.encode()).decode()}"
+        
+        await run_query(conn, """
+            INSERT INTO avatar_renders (id, agent_id, image_url, schema_signature, rendered_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (f"mock_{uuid.uuid4().hex}", agent_id, image_url, 
+              json.dumps({"mock": True, "hue": hue, "complexity": complexity}),
+              datetime.now(timezone.utc).isoformat()))
+        
+        if hasattr(conn, 'commit'):
+            await conn.commit()
         await conn.close()
-        logger.error(f"❌ Network error calling Pollinations.ai for {agent_id}: {type(e).__name__}: {str(e)}")
-        raise HTTPException(503, f"Image service unavailable: {str(e)}")
-    except Exception as e:
+        
+        return {"imageUrl": image_url, "status": "mock"}
+    
+    # Try Pollinations.ai with rate limiting and retry logic
+    max_retries = 3
+    retry_delay = 3.0
+    
+    for attempt in range(max_retries):
+        try:
+            # Wait for rate limit
+            await wait_for_rate_limit()
+            
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                # Pollinations.ai requires URL-encoded prompt
+                safe_prompt = urllib.parse.quote(f"anime portrait, {prompt}, clean background, high quality")
+                img_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=256&height=256&nologo=true&seed={agent_id}"
+                
+                logger.info(f"🎨 Fetching avatar from Pollinations.ai for {agent_id} (attempt {attempt + 1}/{max_retries})")
+                
+                # Fetch the image
+                img_res = await client.get(img_url)
+                
+                if img_res.status_code == 200:
+                    # Success! Convert to base64 data URI
+                    b64 = base64.b64encode(img_res.content).decode()
+                    image_url = f"data:image/png;base64,{b64}"
+                    
+                    # Save to persistent DB
+                    await run_query(conn, """
+                        INSERT INTO avatar_renders (id, agent_id, image_url, schema_signature, rendered_at)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (f"render_{uuid.uuid4().hex}", agent_id, image_url, 
+                          json.dumps({"hue": hue, "complexity": complexity, "source": "pollinations"}),
+                          datetime.now(timezone.utc).isoformat()))
+                    
+                    if hasattr(conn, 'commit'):
+                        await conn.commit()
+                    await conn.close()
+                    
+                    logger.info(f"✅ Avatar generated successfully for {agent_id}")
+                    return {"imageUrl": image_url, "status": "generated"}
+                
+                elif img_res.status_code == 402:
+                    # Rate limited - wait and retry
+                    error_msg = img_res.text[:200] if img_res.text else "Rate limited"
+                    logger.warning(f"⚠️ Pollinations.ai rate limited (402): {error_msg}")
+                    
+                    if attempt < max_retries - 1:
+                        logger.info(f"🔄 Retrying in {retry_delay}s...")
+                        await asyncio.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                        continue
+                    else:
+                        logger.error(f"❌ Pollinations.ai rate limited after {max_retries} attempts")
+                        if not use_fallback:
+                            raise HTTPException(503, f"Image service rate limited: {error_msg}")
+                
+                else:
+                    # Other error
+                    error_msg = img_res.text[:200] if img_res.text else f"Status {img_res.status_code}"
+                    logger.error(f"❌ Pollinations.ai error {img_res.status_code}: {error_msg}")
+                    
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay)
+                        retry_delay *= 2
+                        continue
+                    else:
+                        if not use_fallback:
+                            raise HTTPException(500, f"Image generation failed: {img_res.status_code}")
+        
+        except httpx.RequestError as e:
+            logger.error(f"❌ Network error calling Pollinations.ai: {type(e).__name__}: {str(e)}")
+            
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+                continue
+            else:
+                if not use_fallback:
+                    raise HTTPException(503, f"External service unavailable: {str(e)}")
+    
+    # Fallback to local SVG generation
+    if use_fallback:
+        logger.warning(f"🔄 Falling back to local SVG generation for {agent_id}")
+        svg = generate_local_avatar_svg(agent_id, hue, 0.7, complexity, agent["name"])
+        image_url = f"data:image/svg+xml;base64,{base64.b64encode(svg.encode()).decode()}"
+        
+        await run_query(conn, """
+            INSERT INTO avatar_renders (id, agent_id, image_url, schema_signature, rendered_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (f"fallback_{uuid.uuid4().hex}", agent_id, image_url, 
+              json.dumps({"fallback": True, "hue": hue, "complexity": complexity, "source": "local"}),
+              datetime.now(timezone.utc).isoformat()))
+        
+        if hasattr(conn, 'commit'):
+            await conn.commit()
         await conn.close()
-        logger.error(f"❌ Unexpected error generating avatar for {agent_id}: {type(e).__name__}: {str(e)}", exc_info=True)
-        raise HTTPException(500, f"Generation error: {str(e)}")
+        
+        return {"imageUrl": image_url, "status": "fallback"}
+    
+    # Should not reach here, but just in case
+    await conn.close()
+    raise HTTPException(500, "Avatar generation failed after all retries")
 
 @app.delete("/api/avatars/{agent_id}", dependencies=[Depends(verify_write_key)])
 async def clear_cached_avatar(agent_id: str):
