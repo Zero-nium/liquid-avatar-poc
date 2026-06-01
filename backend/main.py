@@ -1603,13 +1603,18 @@ Style: soft cel shading, clean linework, white background, no text, high quality
 
 @app.post("/api/avatars/{agent_id}/generate")
 async def generate_avatar(agent_id: str):
-
-        # Check if API key is configured
-    if not OPENROUTER_API_KEY:
-        logger.error("❌ OPENROUTER_API_KEY not configured in environment")
-        raise HTTPException(500, "OpenRouter API key not configured on server")
-        
     """Generates and stores an avatar for the given agent using OpenRouter + HF."""
+    
+    # Debug: Log whether the global var is set
+    logger.info(f"🔑 OPENROUTER_API_KEY (global): {'SET' if OPENROUTER_API_KEY else 'NOT SET'}")
+    logger.info(f"🔑 OPENROUTER_API_KEY (env direct): {'SET' if os.getenv('OPENROUTER_API_KEY') else 'NOT SET'}")
+    
+    # Safety: Use global var if available, else fetch directly from env
+    api_key = OPENROUTER_API_KEY or os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        logger.error("❌ OpenRouter API key not configured in any form")
+        raise HTTPException(500, "OpenRouter API key not configured on server")
+    
     conn = await get_db()
     
     # 1. Check persistent cache first
@@ -1645,16 +1650,22 @@ async def generate_avatar(agent_id: str):
         accessories=f"role: {role}"
     )
     
-    # 4. Call OpenRouter (Refine) + Hugging Face (Generate)
+    # When making the OpenRouter call, use the resolved api_key:
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             # Refine prompt via LLM
             refine_res = await client.post(
                 "https://openrouter.ai/api/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
+                headers={
+                    "Authorization": f"Bearer {api_key}",  # Use resolved key
+                    "Content-Type": "application/json"
+                },
                 json={
                     "model": "meta-llama/llama-3.1-8b-instruct:free",
-                    "messages": [{"role": "system", "content": "Refine this prompt for Stable Diffusion. Output ONLY the prompt."}, {"role": "user", "content": prompt}],
+                    "messages": [
+                        {"role": "system", "content": "Refine this prompt for Stable Diffusion. Output ONLY the prompt."}, 
+                        {"role": "user", "content": prompt}
+                    ],
                     "max_tokens": 100
                 }
             )
