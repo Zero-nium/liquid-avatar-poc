@@ -239,11 +239,12 @@ function renderAvatar(selection) {
   });
 }
 
-// ─── CANVAS RENDERING (Anime via Cached or Placeholder) ─────────────────────────────────
+// ─── CANVAS RENDERING (Anime via Cached Images) ─────────────────────────────
 async function renderAnimeFrame() {
   if (!ctx || renderMode !== 'anime') return;
+  
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = '#0F172A'; // Match your background, or keep '#FFFFFF'
+  ctx.fillStyle = '#0F172A'; // Match your dark background
   ctx.fillRect(0, 0, width, height);
 
   // Filter: only registered agents in anime mode
@@ -253,7 +254,7 @@ async function renderAnimeFrame() {
     if (!d.x || !d.y) continue;
     const size = d.avatar?.size ?? 30;
 
-    // ONLY check cache, do NOT auto-generate
+    // ONLY check cache - do NOT auto-generate
     const cachedUrl = await window.AISystem?.getCachedAvatar?.(d.id);
 
     if (cachedUrl) {
@@ -265,7 +266,7 @@ async function renderAnimeFrame() {
         img.onload = () => ctx.drawImage(img, d.x - size, d.y - size, size * 2, size * 2);
       }
     } else {
-      // Uncached placeholder
+      // Uncached placeholder - shows "Click" text
       ctx.fillStyle = '#334155';
       ctx.beginPath();
       ctx.arc(d.x, d.y, size * 0.8, 0, Math.PI * 2);
@@ -285,6 +286,7 @@ async function renderAnimeFrame() {
       ctx.fillText(d.name, d.x, d.y + size * 2.2);
     }
   }
+  
   animationFrame = requestAnimationFrame(renderAnimeFrame);
 }
 
