@@ -1,6 +1,6 @@
 /**
 Liquid Avatar — Swarm Visualization Engine v1.3
-Hybrid Rendering: D3.js Physics + SVG (Geometric) + Canvas (OpenRouter Anime)
+Hybrid Rendering: D3.js Physics + SVG (Geometric) + Canvas (Cached Anime)
 */
 const API_BASE = window.location.origin.includes('localhost')
   ? 'http://localhost:8000'
@@ -33,9 +33,10 @@ let swarmSocket = null;
 function connectSwarmWebSocket() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${protocol}//${window.location.host}/ws/swarm`;
-  
   swarmSocket = new WebSocket(wsUrl);
+  
   swarmSocket.onopen = () => console.log('🔌 WebSocket connected');
+  
   swarmSocket.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data);
@@ -46,6 +47,7 @@ function connectSwarmWebSocket() {
       console.error('WebSocket parse error:', err);
     }
   };
+  
   swarmSocket.onclose = () => setTimeout(connectSwarmWebSocket, 5000);
 }
 
@@ -116,11 +118,10 @@ function renderAvatar(selection) {
   selection.each(function(d) {
     const el = d3.select(this);
     el.selectAll('*').remove();
-
     const isDiscovered = d.cluster && d.cluster.startsWith('discovered_via_');
-    
+
     let color, glow, strokeDasharray, opacity;
-    
+
     if (isDiscovered) {
       color = '#cbd5e1';
       glow = '#94a3b8';
@@ -141,7 +142,7 @@ function renderAvatar(selection) {
       ? (Date.now() - new Date(d.last_reported).getTime()) / 3600000 
       : 0;
     const blurAmount = Math.min(hoursSinceReport / 24, 3);
-    
+
     if (blurAmount > 0.5) {
       el.attr('filter', `blur(${blurAmount}px)`);
       el.append('circle').attr('r', size * 1.6).attr('fill', glow).attr('opacity', 0.04).attr('class', 'glow-outer');
@@ -186,7 +187,7 @@ function renderAvatar(selection) {
         .attr('stroke-dasharray', strokeDasharray)
         .attr('class', 'avatar-shape');
       
-      if (!isDiscovered) {
+      if (!isDiscovered) { 
         if (d.role === 'architect' && sides === 6) {
           for (let i = 1; i <= 2; i++) {
             const inner = generatePolygon(0, 0, size * (i / 3), sides, 0, vibration * 0.5);
@@ -211,7 +212,7 @@ function renderAvatar(selection) {
         .attr('letter-spacing', '0.3px')
         .text(d.name);
     }
-    
+
     if (d.last_beacon && !isDiscovered) {
       const age = (Date.now() - new Date(d.last_beacon).getTime()) / 1000;
       if (age < 300) {
@@ -220,7 +221,7 @@ function renderAvatar(selection) {
         anim();
       }
     }
-    
+
     if (isDiscovered) {
       el.append('title').text(`${d.name}\nDiscovered via ${d.cluster.replace('discovered_via_', '')}\nClick to view details`);
     }
@@ -253,7 +254,7 @@ async function renderAnimeFrame() {
     if (!d.x || !d.y) continue;
     const size = d.avatar?.size ?? 30;
 
-    // ✅ Uses getCachedAvatar (v3.3) - NO auto-generation
+    // ✅ Uses getCachedAvatar (v3.3) - NO auto-generation, uses in-memory cache
     const cachedUrl = await window.AISystem?.getCachedAvatar?.(d.id);
 
     if (cachedUrl) {
@@ -300,7 +301,6 @@ async function init() {
   ctx = canvas.getContext('2d');
   
   svg = d3.select('#swarm-svg').attr('width', width).attr('height', height).attr('viewBox', [0, 0, width, height]);
-  
   const zoom = d3.zoom().scaleExtent([0.1, 4]).on('zoom', (e) => g.attr('transform', e.transform));
   d3.select('#swarm-canvas').call(zoom);
   g = svg.append('g');
@@ -310,25 +310,23 @@ async function init() {
       fetch(`${API_BASE}/swarm/map`),
       fetch(`${API_BASE}/ontology`)
     ]);
-    
     agentsData = await swarmRes.json();
     ontologyData = await ontologyRes.json();
-    
+
     document.getElementById('loading').style.display = 'none';
     renderOntology();
     renderDynamicsLegend();
     updateStats();
-    
+
     // Initialize AISystem
     if (window.AISystem?.init) {
       await AISystem.init();
     }
-    
+
     setupSimulation(width, height);
     switchRenderEngine();
     connectSwarmWebSocket();
     updateModeButton();
-    
   } catch (err) {
     console.error('Init failed:', err);
     document.getElementById('loading').innerHTML = `<div style="color:#ef4444">Error: ${err.message}</div>`;
@@ -354,7 +352,7 @@ function setupSimulation(w, h) {
       const pos = clusterRadial[d.role] || clusterRadial['general'];
       return Math.min(w, h) * 0.3 * pos.radius;
     }, w / 2, h / 2).strength(0.1));
-  
+
   link = g.append('g').selectAll('line').data(agentsData.edges).join('line')
     .attr('class', d => `connection-line conn-${d.type || 'cluster_peer'}`)
     .attr('display', d => connectionFilters[d.type || 'cluster_peer'] ? 'inline' : 'none')
@@ -362,7 +360,7 @@ function setupSimulation(w, h) {
     .attr('stroke-opacity', d => d.type === 'cluster_peer' ? 0.4 : 0.7)
     .attr('stroke-width', d => d.type === 'initialized' ? 1.5 : 1)
     .attr('stroke-dasharray', d => ({ initialized: 'none', cluster_peer: '4,4', beacon_interaction: '2,3' }[d.type] || '4,4'));
-  
+
   // Geometric mode: SVG with full interactions
   if (renderMode === 'geometric') {
     node = g.append('g').selectAll('g').data(agentsData.nodes).join('g')
@@ -372,14 +370,13 @@ function setupSimulation(w, h) {
         .on('start', dragstarted)
         .on('drag', dragged)
         .on('end', dragended));
-    
     node.on('click', function(event, d) {
       console.log('🖱️ SVG node clicked:', d.id);
       selectAgent(d);
     })
     .on('mouseover', (e, d) => showTooltip(e, d))
     .on('mouseout', hideTooltip);
-    
+
     // Ensure SVG receives pointer events, canvas does not
     svg.style('pointer-events', 'auto');
     canvas.style.pointerEvents = 'none';
@@ -390,7 +387,7 @@ function setupSimulation(w, h) {
     canvas.style.pointerEvents = 'auto';
     canvas.style.display = 'block';
   }
-  
+
   // Canvas click handler for anime mode only
   canvas.onclick = async (e) => {
     if (renderMode !== 'anime') {
@@ -410,7 +407,7 @@ function setupSimulation(w, h) {
 
     if (closest) {
       console.log('🖱️ Canvas click:', closest.id);
-    
+      
       const isCached = await window.AISystem?.getCachedAvatar?.(closest.id);
       if (!isCached) {
         console.log(`🎨 Triggering render for ${closest.id}...`);
@@ -420,7 +417,7 @@ function setupSimulation(w, h) {
       }
     }
   };
-  
+
   simulation.on('tick', () => {
     link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
         .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
@@ -438,14 +435,12 @@ function switchRenderEngine() {
     canvas.style.display = 'block';
     canvas.style.pointerEvents = 'auto';
     svg.style('pointer-events', 'none');
-    
     if (animationFrame) cancelAnimationFrame(animationFrame);
     renderAnimeFrame();
   } else {
     canvas.style.display = 'none';
     canvas.style.pointerEvents = 'none';
     svg.style('pointer-events', 'auto');
-    
     if (animationFrame) cancelAnimationFrame(animationFrame);
     
     node = g.append('g').selectAll('g').data(agentsData.nodes).join('g')
@@ -470,8 +465,8 @@ function updateModeButton() {
   const btn = document.getElementById('mode-toggle');
   if (!btn) return;
   btn.textContent = renderMode === 'geometric' ? 'GEOMETRIC' : 'ANIME';
-  btn.style.background = renderMode === 'geometric' ? 'transparent' : 'var(--accent)';
-  btn.style.color = renderMode === 'geometric' ? 'var(--text-primary)' : 'white';
+  btn.style.background = renderMode === 'geometric' ? 'transparent' : 'var(--accent, #667eea)';
+  btn.style.color = renderMode === 'geometric' ? 'var(--text-primary, #e2e8f0)' : 'white';
 }
 
 function cycleRenderMode() {
@@ -479,29 +474,6 @@ function cycleRenderMode() {
   localStorage.setItem('liquid_render_mode', renderMode);
   updateModeButton();
   switchRenderEngine();
-}
-
-function switchRenderEngine() {
-  d3.selectAll('.agent-node').remove();
-  ctx.clearRect(0, 0, width, height);
-  
-  if (renderMode === 'anime') {
-    canvas.style.display = 'block';
-    if (animationFrame) cancelAnimationFrame(animationFrame);
-    renderAnimeFrame();
-  } else {
-    canvas.style.display = 'none';
-    if (animationFrame) cancelAnimationFrame(animationFrame);
-    
-    node = g.append('g').selectAll('g').data(agentsData.nodes).join('g')
-      .attr('class', 'agent-node')
-      .call(renderAvatar)
-      .call(d3.drag().on('start', dragstarted).on('drag', dragged).on('end', dragended));
-    
-    node.on('click', (e, d) => selectAgent(d))
-        .on('mouseover', (e, d) => showTooltip(e, d))
-        .on('mouseout', hideTooltip);
-  }
 }
 
 function toggleLabels() {
@@ -529,33 +501,27 @@ async function selectAgent(agent) {
     
     details.innerHTML = `
       <div style="margin-bottom:12px">
-        <div style="font-size:16px;font-weight:600;color:${color};margin-bottom:4px">
-          ${fullData.identity?.name || agent.name}
-        </div>
-        <div style="font-size:11px;color:#64748b;text-transform:uppercase">
-          ${fullData.identity?.role || agent.role || 'general'} · ${agent.cluster || 'no cluster'}
-        </div>
+        <div style="font-size:16px;font-weight:600;color:${color};margin-bottom:4px">${fullData.identity?.name || agent.name}</div>
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase">${fullData.identity?.role || agent.role || 'general'} · ${agent.cluster || 'no cluster'}</div>
       </div>
       <div style="margin-bottom:12px">
-        <span style="display:inline-flex;align-items:center;padding:2px 6px;border:1px solid var(--border);border-radius:0;font-size:9px;text-transform:uppercase">
-          ${agent.avatar?.dynamics_state || 'idle'}
-        </span>
+        <span style="display:inline-flex;align-items:center;padding:2px 6px;border:1px solid var(--border, #334155);border-radius:0;font-size:9px;text-transform:uppercase">${agent.avatar?.dynamics_state || 'idle'}</span>
       </div>
       <div style="font-size:11px;color:#94a3b8;margin-bottom:8px">Avatar Signature</div>
-      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border)">
-        <span style="color:var(--text-secondary)">Hue</span><span>${Math.round(agent.avatar?.base_hue ?? 180)}°</span>
+      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border, #334155)">
+        <span style="color:var(--text-secondary, #94a3b8)">Hue</span> <span>${Math.round(agent.avatar?.base_hue ?? 180)}°</span>
       </div>
-      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border)">
-        <span style="color:var(--text-secondary)">Saturation</span><span>${Math.round((agent.avatar?.saturation ?? 0.8) * 100)}%</span>
+      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border, #334155)">
+        <span style="color:var(--text-secondary, #94a3b8)">Saturation</span> <span>${Math.round((agent.avatar?.saturation ?? 0.8) * 100)}%</span>
       </div>
-      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border)">
-        <span style="color:var(--text-secondary)">Shape</span><span>${agent.avatar?.shape_complexity ?? 6}-gon</span>
+      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border, #334155)">
+        <span style="color:var(--text-secondary, #94a3b8)">Shape</span> <span>${agent.avatar?.shape_complexity ?? 6}-gon</span>
       </div>
-      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border)">
-        <span style="color:var(--text-secondary)">Size</span><span>${Math.round(agent.avatar?.size ?? 20)}px</span>
+      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border, #334155)">
+        <span style="color:var(--text-secondary, #94a3b8)">Size</span> <span>${Math.round(agent.avatar?.size ?? 20)}px</span>
       </div>
-      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border)">
-        <span style="color:var(--text-secondary)">Pulse</span><span>${(agent.avatar?.pulse_rate ?? 1.0).toFixed(2)}x</span>
+      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border, #334155)">
+        <span style="color:var(--text-secondary, #94a3b8)">Pulse</span> <span>${(agent.avatar?.pulse_rate ?? 1.0).toFixed(2)}x</span>
       </div>
       ${isDiscovered ? `
         <div style="margin-top:20px;padding:16px;background:linear-gradient(135deg,#f0f9ff,#e0f2fe);border:1px solid #bae6fd;border-radius:8px">
@@ -566,22 +532,21 @@ async function selectAgent(agent) {
         </div>
       ` : ''}
     `;
-    
+
     // Add "Clear Cache" button for testing (only for registered agents)
     if (!isDiscovered && window.AISystem?.clearCache) {
       details.innerHTML += `
-        <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border)">
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border, #334155)">
           <button onclick="AISystem.clearCache('${agent.id}'); alert('✅ Cache cleared for ${agent.id}'); selectAgent(selectedAgent);" 
-                  style="width:100%;padding:8px;background:#f1f5f9;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-family:var(--font-mono);font-size:10px">
+                  style="width:100%;padding:8px;background:#f1f5f9;border:1px solid var(--border, #334155);border-radius:4px;cursor:pointer;font-family:var(--font-mono, monospace);font-size:10px">
             🗑️ Clear Render Cache (Test)
           </button>
-          <div style="font-size:9px;color:var(--text-muted);margin-top:4px">
+          <div style="font-size:9px;color:var(--text-muted, #64748b);margin-top:4px">
             Forces re-render on next toggle (for testing)
           </div>
         </div>
       `;
     }
-    
   } catch (err) {
     console.error('Failed to fetch agent:', err);
   }
@@ -590,7 +555,6 @@ async function selectAgent(agent) {
 function showTooltip(event, agent) {
   const tooltip = document.getElementById('tooltip');
   const color = getAgentColor(agent);
-  
   tooltip.innerHTML = `<div style="font-weight:600;color:${color}">${agent.name}</div><div style="color:#94a3b8;font-size:11px">${agent.role} · ${agent.avatar?.dynamics_state || 'idle'}</div>`;
   tooltip.style.left = (event.pageX + 16) + 'px';
   tooltip.style.top = (event.pageY + 16) + 'px';
@@ -610,16 +574,22 @@ function updateStats() {
 
 function renderOntology() {
   if (!ontologyData) return;
-  document.getElementById('ontology-list').innerHTML = ontologyData.domains.map(d => 
-    `<div style="display:flex;align-items:center;gap:8px;padding:2px 0"><div style="width:16px;height:16px;background:${d.spectrum[0]};border:1px solid var(--border)"></div><span>${d.domain}</span></div>`
+  document.getElementById('ontology-list').innerHTML = ontologyData.domains.map(d =>
+    `<div style="display:flex;align-items:center;gap:8px;padding:2px 0">
+      <div style="width:16px;height:16px;background:${d.spectrum[0]};border:1px solid var(--border, #334155)"></div>
+      <span>${d.domain}</span>
+    </div>`
   ).join('');
 }
 
 function renderDynamicsLegend() {
   const states = ['idle', 'input', 'output', 'analysis', 'verification'];
   const desc = { idle: 'Subtle glow', input: 'Inward pulse', output: 'Outward pulse', analysis: 'Rotation', verification: 'Pendulum' };
-  document.getElementById('dynamics-legend').innerHTML = states.map(s => 
-    `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:11px"><span style="display:inline-flex;align-items:center;padding:2px 6px;border:1px solid var(--border);border-radius:0;font-size:9px">${s}</span><span style="color:#64748b">${desc[s]}</span></div>`
+  document.getElementById('dynamics-legend').innerHTML = states.map(s =>
+    `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:11px">
+      <span style="display:inline-flex;align-items:center;padding:2px 6px;border:1px solid var(--border, #334155);border-radius:0;font-size:9px">${s}</span>
+      <span style="color:#64748b">${desc[s]}</span>
+    </div>`
   ).join('');
 }
 
