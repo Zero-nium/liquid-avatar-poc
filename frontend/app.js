@@ -6,7 +6,7 @@ const API_BASE = window.location.origin.includes('localhost')
   ? 'http://localhost:8000'
   : window.location.origin;
 
-// ─── STATE ───────────────────────────────────────────────────────────────────
+// ─── STATE ────────────────────────────────────────────────────────────────────
 let simulation, svg, g, link, node;
 let agentsData = { nodes: [], edges: [] };
 let ontologyData = null;
