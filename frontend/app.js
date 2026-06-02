@@ -6,7 +6,7 @@ const API_BASE = window.location.origin.includes('localhost')
   ? 'http://localhost:8000'
   : window.location.origin;
 
-// ─── STATE ────────────────────────────────────────────────────────────────────
+// ─── STATE ───────────────────────────────────────────────────────────────────
 let simulation, svg, g, link, node;
 let agentsData = { nodes: [], edges: [] };
 let ontologyData = null;
@@ -14,8 +14,6 @@ let selectedAgent = null;
 let showLabels = false;
 let animationFrame;
 let width, height;
-
-// ─── RENDER MODE STATE ───────────────────────────────────────────────────────
 let renderMode = localStorage.getItem('liquid_render_mode') || 'geometric';
 let canvas, ctx;
 
@@ -36,7 +34,6 @@ function connectSwarmWebSocket() {
   swarmSocket = new WebSocket(wsUrl);
   
   swarmSocket.onopen = () => console.log('🔌 WebSocket connected');
-  
   swarmSocket.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data);
@@ -47,7 +44,6 @@ function connectSwarmWebSocket() {
       console.error('WebSocket parse error:', err);
     }
   };
-  
   swarmSocket.onclose = () => setTimeout(connectSwarmWebSocket, 5000);
 }
 
@@ -245,7 +241,7 @@ async function renderAnimeFrame() {
   if (!ctx || renderMode !== 'anime') return;
   
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = '#0F172A'; // Dark background
+  ctx.fillStyle = '#0F172A';
   ctx.fillRect(0, 0, width, height);
 
   const renderable = agentsData.nodes.filter(a => !a.cluster?.startsWith('discovered_via_'));
@@ -254,7 +250,6 @@ async function renderAnimeFrame() {
     if (!d.x || !d.y) continue;
     const size = d.avatar?.size ?? 30;
 
-    // ✅ Uses getCachedAvatar (v3.3) - NO auto-generation, uses in-memory cache
     const cachedUrl = await window.AISystem?.getCachedAvatar?.(d.id);
 
     if (cachedUrl) {
@@ -266,7 +261,6 @@ async function renderAnimeFrame() {
         img.onload = () => ctx.drawImage(img, d.x - size, d.y - size, size * 2, size * 2);
       }
     } else {
-      // Uncached placeholder
       ctx.fillStyle = '#334155';
       ctx.beginPath();
       ctx.arc(d.x, d.y, size * 0.8, 0, Math.PI * 2);
@@ -318,7 +312,6 @@ async function init() {
     renderDynamicsLegend();
     updateStats();
 
-    // Initialize AISystem
     if (window.AISystem?.init) {
       await AISystem.init();
     }
@@ -361,7 +354,6 @@ function setupSimulation(w, h) {
     .attr('stroke-width', d => d.type === 'initialized' ? 1.5 : 1)
     .attr('stroke-dasharray', d => ({ initialized: 'none', cluster_peer: '4,4', beacon_interaction: '2,3' }[d.type] || '4,4'));
 
-  // Geometric mode: SVG with full interactions
   if (renderMode === 'geometric') {
     node = g.append('g').selectAll('g').data(agentsData.nodes).join('g')
       .attr('class', 'agent-node')
@@ -370,6 +362,7 @@ function setupSimulation(w, h) {
         .on('start', dragstarted)
         .on('drag', dragged)
         .on('end', dragended));
+    
     node.on('click', function(event, d) {
       console.log('🖱️ SVG node clicked:', d.id);
       selectAgent(d);
@@ -377,18 +370,15 @@ function setupSimulation(w, h) {
     .on('mouseover', (e, d) => showTooltip(e, d))
     .on('mouseout', hideTooltip);
 
-    // Ensure SVG receives pointer events, canvas does not
     svg.style('pointer-events', 'auto');
     canvas.style.pointerEvents = 'none';
     canvas.style.display = 'none';
   } else {
-    // Anime mode: canvas receives events
     svg.style('pointer-events', 'none');
     canvas.style.pointerEvents = 'auto';
     canvas.style.display = 'block';
   }
 
-  // Canvas click handler for anime mode only
   canvas.onclick = async (e) => {
     if (renderMode !== 'anime') {
       console.log('⚠️ Canvas click blocked in geometric mode');
@@ -465,8 +455,8 @@ function updateModeButton() {
   const btn = document.getElementById('mode-toggle');
   if (!btn) return;
   btn.textContent = renderMode === 'geometric' ? 'GEOMETRIC' : 'ANIME';
-  btn.style.background = renderMode === 'geometric' ? 'transparent' : 'var(--accent, #667eea)';
-  btn.style.color = renderMode === 'geometric' ? 'var(--text-primary, #e2e8f0)' : 'white';
+  btn.style.background = renderMode === 'geometric' ? 'transparent' : 'var(--accent)';
+  btn.style.color = renderMode === 'geometric' ? 'var(--text-primary)' : 'white';
 }
 
 function cycleRenderMode() {
@@ -484,7 +474,7 @@ function toggleLabels() {
 function clearAvatarCache() {
   if (window.AISystem?.clearAllCache) {
     AISystem.clearAllCache();
-    alert('✅ Avatar cache cleared! Toggle modes to see fresh renders.');
+    location.reload();
   }
 }
 
@@ -505,23 +495,23 @@ async function selectAgent(agent) {
         <div style="font-size:11px;color:#64748b;text-transform:uppercase">${fullData.identity?.role || agent.role || 'general'} · ${agent.cluster || 'no cluster'}</div>
       </div>
       <div style="margin-bottom:12px">
-        <span style="display:inline-flex;align-items:center;padding:2px 6px;border:1px solid var(--border, #334155);border-radius:0;font-size:9px;text-transform:uppercase">${agent.avatar?.dynamics_state || 'idle'}</span>
+        <span style="display:inline-flex;align-items:center;padding:2px 6px;border:1px solid var(--border);border-radius:0;font-size:9px;text-transform:uppercase">${agent.avatar?.dynamics_state || 'idle'}</span>
       </div>
       <div style="font-size:11px;color:#94a3b8;margin-bottom:8px">Avatar Signature</div>
-      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border, #334155)">
-        <span style="color:var(--text-secondary, #94a3b8)">Hue</span> <span>${Math.round(agent.avatar?.base_hue ?? 180)}°</span>
+      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border)">
+        <span style="color:var(--text-secondary)">Hue</span> <span>${Math.round(agent.avatar?.base_hue ?? 180)}°</span>
       </div>
-      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border, #334155)">
-        <span style="color:var(--text-secondary, #94a3b8)">Saturation</span> <span>${Math.round((agent.avatar?.saturation ?? 0.8) * 100)}%</span>
+      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border)">
+        <span style="color:var(--text-secondary)">Saturation</span> <span>${Math.round((agent.avatar?.saturation ?? 0.8) * 100)}%</span>
       </div>
-      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border, #334155)">
-        <span style="color:var(--text-secondary, #94a3b8)">Shape</span> <span>${agent.avatar?.shape_complexity ?? 6}-gon</span>
+      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border)">
+        <span style="color:var(--text-secondary)">Shape</span> <span>${agent.avatar?.shape_complexity ?? 6}-gon</span>
       </div>
-      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border, #334155)">
-        <span style="color:var(--text-secondary, #94a3b8)">Size</span> <span>${Math.round(agent.avatar?.size ?? 20)}px</span>
+      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border)">
+        <span style="color:var(--text-secondary)">Size</span> <span>${Math.round(agent.avatar?.size ?? 20)}px</span>
       </div>
-      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border, #334155)">
-        <span style="color:var(--text-secondary, #94a3b8)">Pulse</span> <span>${(agent.avatar?.pulse_rate ?? 1.0).toFixed(2)}x</span>
+      <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px;border-bottom:1px dashed var(--border)">
+        <span style="color:var(--text-secondary)">Pulse</span> <span>${(agent.avatar?.pulse_rate ?? 1.0).toFixed(2)}x</span>
       </div>
       ${isDiscovered ? `
         <div style="margin-top:20px;padding:16px;background:linear-gradient(135deg,#f0f9ff,#e0f2fe);border:1px solid #bae6fd;border-radius:8px">
@@ -533,15 +523,14 @@ async function selectAgent(agent) {
       ` : ''}
     `;
 
-    // Add "Clear Cache" button for testing (only for registered agents)
     if (!isDiscovered && window.AISystem?.clearCache) {
       details.innerHTML += `
-        <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border, #334155)">
-          <button onclick="AISystem.clearCache('${agent.id}'); alert('✅ Cache cleared for ${agent.id}'); selectAgent(selectedAgent);" 
-                  style="width:100%;padding:8px;background:#f1f5f9;border:1px solid var(--border, #334155);border-radius:4px;cursor:pointer;font-family:var(--font-mono, monospace);font-size:10px">
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border)">
+          <button onclick="AISystem.clearCache('${agent.id}'); location.reload();" 
+                  style="width:100%;padding:8px;background:#f1f5f9;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-family:var(--font-mono);font-size:10px">
             🗑️ Clear Render Cache (Test)
           </button>
-          <div style="font-size:9px;color:var(--text-muted, #64748b);margin-top:4px">
+          <div style="font-size:9px;color:var(--text-muted);margin-top:4px">
             Forces re-render on next toggle (for testing)
           </div>
         </div>
@@ -576,7 +565,7 @@ function renderOntology() {
   if (!ontologyData) return;
   document.getElementById('ontology-list').innerHTML = ontologyData.domains.map(d =>
     `<div style="display:flex;align-items:center;gap:8px;padding:2px 0">
-      <div style="width:16px;height:16px;background:${d.spectrum[0]};border:1px solid var(--border, #334155)"></div>
+      <div style="width:16px;height:16px;background:${d.spectrum[0]};border:1px solid var(--border)"></div>
       <span>${d.domain}</span>
     </div>`
   ).join('');
@@ -587,16 +576,10 @@ function renderDynamicsLegend() {
   const desc = { idle: 'Subtle glow', input: 'Inward pulse', output: 'Outward pulse', analysis: 'Rotation', verification: 'Pendulum' };
   document.getElementById('dynamics-legend').innerHTML = states.map(s =>
     `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:11px">
-      <span style="display:inline-flex;align-items:center;padding:2px 6px;border:1px solid var(--border, #334155);border-radius:0;font-size:9px">${s}</span>
+      <span style="display:inline-flex;align-items:center;padding:2px 6px;border:1px solid var(--border);border-radius:0;font-size:9px">${s}</span>
       <span style="color:#64748b">${desc[s]}</span>
     </div>`
   ).join('');
-}
-
-function toggleConnection(checkbox) {
-  const type = checkbox.dataset.conn;
-  connectionFilters[type] = checkbox.checked;
-  if (link) link.attr('display', d => connectionFilters[d.type || 'cluster_peer'] ? 'inline' : 'none');
 }
 
 function dragstarted(event, d) {
