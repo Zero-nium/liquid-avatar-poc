@@ -105,6 +105,8 @@ USE_TURSO = LIBSQL_AVAILABLE and TURSO_URL and TURSO_TOKEN
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(os.path.dirname(BASE_DIR), "frontend")
+STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage", "avatars")
+os.makedirs(STORAGE_DIR, exist_ok=True)  # Automatically creates the directory (Handles Step 2)
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -1575,26 +1577,6 @@ async def delete_agent(agent_id: str):
     
     return {"status": "deleted", "agent_id": agent_id}
 
-# ─── AVATAR RENDERING CACHE ENDPOINTS ─────────────────────────────────────────
-
-@app.get("/api/avatars/{agent_id}")
-async def get_cached_avatar(agent_id: str):
-    """Get cached avatar render for agent."""
-    conn = await get_db()
-    render = await run_query(conn, 
-        "SELECT image_url, schema_signature, rendered_at FROM avatar_renders WHERE agent_id = ?",
-        (agent_id,), fetch="one")
-    await conn.close()
-    
-    if not render:
-        raise HTTPException(404, "No cached render found")
-    
-    return {
-        "imageUrl": render["image_url"],
-        "renderedAt": render["rendered_at"],
-        "schemaSignature": json.loads(render["schema_signature"])
-    }
-
 # ─── AVATAR GENERATION HELPERS ────────────────────────────────────────────────
 
 def generate_local_avatar_svg(agent_id: str, hue: float, sat: float, complexity: int, name: str = "Agent") -> str:
@@ -1649,57 +1631,87 @@ async def wait_for_rate_limit():
         
         LAST_GENERATION_TIME = time.time()
 
-# ─── AVATAR GENERATION (Pollinations.ai with Rate Limiting & Fallback) ───────
+        # ── MISSING TEMPLATE ADDED HERE ──────────────────────────────────────────────
+        AVATAR_PROMPT_TEMPLATE = (
+        "anime portrait of a character, {hair_style} {hair_color} hair, "
+        "{expression} expression, {accessories}, high quality, detailed, "
+        "studio lighting, clean background, masterpiece"
+    )
 
-# COUNCIL: Update this template to refine the avatar style
-AVATAR_PROMPT_TEMPLATE = """
-Anime avatar portrait, chibi style, 
-Hair: {hair_style} colored {hair_color},
-Expression: {expression},
-Accessories: {accessories},
-Style: soft cel shading, clean linework, white background, no text, high quality
-"""
+# ─── AVATAR RENDERING CACHE ENDPOINTS ─────────────────────────────────────────
+
+@app.get("/api/avatars/{agent_id}")
+async def get_cached_avatar(agent_id: str):
+    """Get cached avatar render URL for an agent."""
+    conn = await get_db()
+    render = await run_query(conn,
+        "SELECT image_url, schema_signature, rendered_at FROM avatar_renders WHERE agent_id = ?",
+        (agent_id,), fetch="one")
+    await conn.close()
+    
+    if not render:
+        raise HTTPException(status_code=404, detail="No cached render found")
+    
+    return {
+        "imageUrl": render["image_url"],
+        "renderedAt": render["rendered_at"],
+        "schemaSignature": json.loads(render["schema_signature"])
+    }
+
 
 @app.post("/api/avatars/{agent_id}/generate")
 async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool = True):
     """
     Generates and stores an avatar for the given agent.
-    
-    Args:
-        agent_id: UUID of the agent
-        mock: If True, return a simple placeholder
-        use_fallback: If True, fall back to local SVG generation if external service fails
+    Saves to local disk storage and updates DB cache to prevent re-rendering.
     """
-    
     conn = await get_db()
     
-    # Check persistent cache first
-    cached = await run_query(conn, 
-        "SELECT image_url, schema_signature FROM avatar_renders WHERE agent_id = ?", 
+    # 1. Check persistent DB cache first
+    cached = await run_query(conn,
+        "SELECT image_url, schema_signature FROM avatar_renders WHERE agent_id = ?",
         (agent_id,), fetch="one")
+    
     if cached:
         await conn.close()
         return {"imageUrl": cached["image_url"], "status": "cached"}
-    
+
     # Get agent data for prompt construction
     agent = await run_query(conn, "SELECT * FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
-    avatar_state = await run_query(conn, 
-        "SELECT * FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1", 
+    avatar_state = await run_query(conn,
+        "SELECT * FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1",
         (agent_id,), fetch="one")
-    
+
     if not agent:
         await conn.close()
-        raise HTTPException(404, "Agent not found")
-    
-    # Build prompt based on agent attributes
+        raise HTTPException(status_code=404, detail="Agent not found")
+
     hue = avatar_state["base_hue"] if avatar_state else 180
     complexity = avatar_state["shape_complexity"] if avatar_state else 6
     role = agent["role"] or "general"
     dynamics = avatar_state["dynamics_state"] if avatar_state else "idle"
     
+    # Determine file extension based on generation method
+    file_ext = "svg" if mock or not use_fallback else "png"
+    file_path = os.path.join(STORAGE_DIR, f"{agent_id}.{file_ext}")
+    relative_url = f"/storage/avatars/{agent_id}.{file_ext}"
+
+    # 2. Double-check if file already exists on disk (extra safety against DB desync)
+    if os.path.exists(file_path):
+        await run_query(conn, """
+            INSERT OR REPLACE INTO avatar_renders (id, agent_id, image_url, schema_signature, rendered_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (f"disk_cache_{uuid.uuid4().hex}", agent_id, relative_url,
+              json.dumps({"cached_on_disk": True, "hue": hue, "complexity": complexity}),
+              datetime.now(timezone.utc).isoformat()))
+        if hasattr(conn, 'commit'):
+            await conn.commit()
+        await conn.close()
+        return {"imageUrl": relative_url, "status": "cached"}
+
+    # 3. Build prompt based on agent attributes
     hair_styles = {3: "short cropped", 5: "bob cut", 6: "medium length", 8: "long layered", 10: "elaborate braided", 12: "flowing twin tails"}
     hair = hair_styles.get(complexity, "medium length")
-    
     expressions = {"idle": "soft neutral", "output": "bright smile", "input": "focused gaze", "analysis": "thoughtful look"}
     expr = expressions.get(dynamics, "soft neutral")
     
@@ -1709,152 +1721,145 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
         expression=expr,
         accessories=f"role: {role}"
     )
-    
-    # Mock mode: return simple SVG
-    if mock:
-        logger.warning(f"🎭 Mock mode for {agent_id}")
+
+    image_generated = False
+    image_url_to_store = ""
+    schema_sig = {}
+
+    # 4. Mock mode or Forced Fallback mode: Generate SVG
+    if mock or not use_fallback:
+        logger.warning(f"🎭 Mock/Fallback mode for {agent_id}")
         svg = generate_local_avatar_svg(agent_id, hue, 0.7, complexity, agent["name"])
-        image_url = f"data:image/svg+xml;base64,{base64.b64encode(svg.encode()).decode()}"
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(svg)
+        image_generated = True
+        image_url_to_store = relative_url
+        schema_sig = {"mock": mock, "fallback": not use_fallback, "hue": hue, "complexity": complexity, "source": "local_svg"}
+    else:
+        # 5. Try Pollinations.ai with rate limiting and retry logic
+        max_retries = 3
+        retry_delay = 3.0
         
-        await run_query(conn, """
-            INSERT INTO avatar_renders (id, agent_id, image_url, schema_signature, rendered_at)
-            VALUES (?, ?, ?, ?, ?)
-        """, (f"mock_{uuid.uuid4().hex}", agent_id, image_url, 
-              json.dumps({"mock": True, "hue": hue, "complexity": complexity}),
-              datetime.now(timezone.utc).isoformat()))
-        
-        if hasattr(conn, 'commit'):
-            await conn.commit()
-        await conn.close()
-        
-        return {"imageUrl": image_url, "status": "mock"}
-    
-    # Try Pollinations.ai with rate limiting and retry logic
-    max_retries = 3
-    retry_delay = 3.0
-    
-    for attempt in range(max_retries):
-        try:
-            # Wait for rate limit
-            await wait_for_rate_limit()
-            
-            async with httpx.AsyncClient(timeout=45.0) as client:
-                # Pollinations.ai requires URL-encoded prompt
-                safe_prompt = urllib.parse.quote(f"anime portrait, {prompt}, clean background, high quality")
-                img_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=256&height=256&nologo=true&seed={agent_id}"
-                
-                logger.info(f"🎨 Fetching avatar from Pollinations.ai for {agent_id} (attempt {attempt + 1}/{max_retries})")
-                
-                # Fetch the image
-                img_res = await client.get(img_url)
-                
-                if img_res.status_code == 200:
-                    # Success! Convert to base64 data URI
-                    b64 = base64.b64encode(img_res.content).decode()
-                    image_url = f"data:image/png;base64,{b64}"
+        for attempt in range(max_retries):
+            try:
+                await wait_for_rate_limit()
+                async with httpx.AsyncClient(timeout=45.0) as client:
+                    safe_prompt = urllib.parse.quote(f"anime portrait, {prompt}, clean background, high quality")
+                    img_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=256&height=256&nologo=true&seed={agent_id}"
                     
-                    # Save to persistent DB
-                    await run_query(conn, """
-                        INSERT INTO avatar_renders (id, agent_id, image_url, schema_signature, rendered_at)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (f"render_{uuid.uuid4().hex}", agent_id, image_url, 
-                          json.dumps({"hue": hue, "complexity": complexity, "source": "pollinations"}),
-                          datetime.now(timezone.utc).isoformat()))
+                    logger.info(f"🎨 Fetching avatar from Pollinations.ai for {agent_id} (attempt {attempt+1}/{max_retries})")
+                    img_res = await client.get(img_url)
                     
-                    if hasattr(conn, 'commit'):
-                        await conn.commit()
-                    await conn.close()
-                    
-                    logger.info(f"✅ Avatar generated successfully for {agent_id}")
-                    return {"imageUrl": image_url, "status": "generated"}
-                
-                elif img_res.status_code == 402:
-                    # Rate limited - wait and retry
-                    error_msg = img_res.text[:200] if img_res.text else "Rate limited"
-                    logger.warning(f"⚠️ Pollinations.ai rate limited (402): {error_msg}")
-                    
-                    if attempt < max_retries - 1:
-                        logger.info(f"🔄 Retrying in {retry_delay}s...")
-                        await asyncio.sleep(retry_delay)
-                        retry_delay *= 2  # Exponential backoff
-                        continue
+                    if img_res.status_code == 200:
+                        # Success! Save bytes directly to disk
+                        with open(file_path, "wb") as f:
+                            f.write(img_res.content)
+                        image_generated = True
+                        image_url_to_store = relative_url
+                        schema_sig = {"hue": hue, "complexity": complexity, "source": "pollinations"}
+                        logger.info(f"✅ Avatar generated and saved to disk for {agent_id}")
+                        break
+                    elif img_res.status_code == 402:
+                        error_msg = img_res.text[:200] if img_res.text else "Rate limited"
+                        logger.warning(f"⚠️ Pollinations.ai rate limited (402): {error_msg}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            retry_delay *= 2
+                            continue
+                        else:
+                            logger.error(f"❌ Pollinations.ai rate limited after {max_retries} attempts")
+                            if not use_fallback:
+                                raise HTTPException(status_code=503, detail=f"Image service rate limited: {error_msg}")
                     else:
-                        logger.error(f"❌ Pollinations.ai rate limited after {max_retries} attempts")
-                        if not use_fallback:
-                            raise HTTPException(503, f"Image service rate limited: {error_msg}")
-                
+                        error_msg = img_res.text[:200] if img_res.text else f"Status {img_res.status_code}"
+                        logger.error(f"❌ Pollinations.ai error {img_res.status_code}: {error_msg}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            retry_delay *= 2
+                            continue
+                        else:
+                            if not use_fallback:
+                                raise HTTPException(status_code=500, detail=f"Image generation failed: {img_res.status_code}")
+            except httpx.RequestError as e:
+                logger.error(f"❌ Network error calling Pollinations.ai: {type(e).__name__}: {str(e)}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
                 else:
-                    # Other error
-                    error_msg = img_res.text[:200] if img_res.text else f"Status {img_res.status_code}"
-                    logger.error(f"❌ Pollinations.ai error {img_res.status_code}: {error_msg}")
-                    
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(retry_delay)
-                        retry_delay *= 2
-                        continue
-                    else:
-                        if not use_fallback:
-                            raise HTTPException(500, f"Image generation failed: {img_res.status_code}")
-        
-        except httpx.RequestError as e:
-            logger.error(f"❌ Network error calling Pollinations.ai: {type(e).__name__}: {str(e)}")
-            
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2
-                continue
-            else:
-                if not use_fallback:
-                    raise HTTPException(503, f"External service unavailable: {str(e)}")
-    
-    # Fallback to local SVG generation
-    if use_fallback:
-        logger.warning(f"🔄 Falling back to local SVG generation for {agent_id}")
-        svg = generate_local_avatar_svg(agent_id, hue, 0.7, complexity, agent["name"])
-        image_url = f"data:image/svg+xml;base64,{base64.b64encode(svg.encode()).decode()}"
-        
+                    if not use_fallback:
+                        raise HTTPException(status_code=503, detail=f"External service unavailable: {str(e)}")
+
+        # 6. Fallback to local SVG if Pollinations failed but use_fallback is True
+        if not image_generated and use_fallback:
+            logger.warning(f"🔄 Falling back to local SVG generation for {agent_id}")
+            file_path = os.path.join(STORAGE_DIR, f"{agent_id}.svg")
+            relative_url = f"/storage/avatars/{agent_id}.svg"
+            svg = generate_local_avatar_svg(agent_id, hue, 0.7, complexity, agent["name"])
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(svg)
+            image_generated = True
+            image_url_to_store = relative_url
+            schema_sig = {"fallback": True, "hue": hue, "complexity": complexity, "source": "local_svg"}
+
+    # 7. Final DB update
+    if image_generated:
         await run_query(conn, """
-            INSERT INTO avatar_renders (id, agent_id, image_url, schema_signature, rendered_at)
+            INSERT OR REPLACE INTO avatar_renders (id, agent_id, image_url, schema_signature, rendered_at)
             VALUES (?, ?, ?, ?, ?)
-        """, (f"fallback_{uuid.uuid4().hex}", agent_id, image_url, 
-              json.dumps({"fallback": True, "hue": hue, "complexity": complexity, "source": "local"}),
+        """, (f"render_{uuid.uuid4().hex}", agent_id, image_url_to_store,
+              json.dumps(schema_sig),
               datetime.now(timezone.utc).isoformat()))
-        
         if hasattr(conn, 'commit'):
             await conn.commit()
         await conn.close()
-        
-        return {"imageUrl": image_url, "status": "fallback"}
+        return {"imageUrl": image_url_to_store, "status": "generated"}
     
-    # Should not reach here, but just in case
     await conn.close()
-    raise HTTPException(500, "Avatar generation failed after all retries")
+    raise HTTPException(status_code=500, detail="Avatar generation failed after all retries")
+
 
 @app.delete("/api/avatars/{agent_id}", dependencies=[Depends(verify_write_key)])
 async def clear_cached_avatar(agent_id: str):
-    """Clear cached render (for testing)."""
+    """Clear cached render from DB and disk (for testing)."""
     conn = await get_db()
     await run_query(conn, "DELETE FROM avatar_renders WHERE agent_id = ?", (agent_id,))
     if hasattr(conn, 'commit'):
         await conn.commit()
     await conn.close()
+    
+    # Also delete from disk if it exists
+    for ext in [".png", ".svg"]:
+        file_path = os.path.join(STORAGE_DIR, f"{agent_id}{ext}")
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            
     return {"status": "cleared", "agent_id": agent_id}
 
-# ─── STATIC FILES ─────────────────────────────────────────────────────────────
+# ─── STATIC FILES & ROUTES ────────────────────────────────────────────────────
 
+# 1. Mount specific API/Storage paths FIRST (so they don't get caught by the frontend)
+app.mount("/storage/avatars", StaticFiles(directory=STORAGE_DIR), name="avatar_storage")
+
+# 2. Mount Frontend (Catch-all) LAST
 if os.path.exists(FRONTEND_DIR):
-    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
     @app.get("/methodology")
     async def serve_methodology():
         return FileResponse(os.path.join(FRONTEND_DIR, "methodology.html"))
+
+    # Catch-all mount for the frontend SPA
+    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 else:
     @app.get("/")
     async def root():
-        return {"message": "Liquid Avatar API", "schema_version": SCHEMA_VERSION,
-                "council": "Aura Quorum", "note": "Frontend not found."}
+        return {
+            "message": "Liquid Avatar API", 
+            "schema_version": SCHEMA_VERSION,
+            "council": "Aura Quorum", 
+            "note": "Frontend not found."
+        }
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))

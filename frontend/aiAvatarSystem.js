@@ -10,126 +10,74 @@ const AI_CONFIG = {
 };
 
 // ─── CACHE MANAGER ──────────────────────────────────────────────────────────
-const AvatarCache = {
-  db: null,
-  
-  async init() {
-    if (!window.indexedDB) {
-      console.warn('⚠️ IndexedDB not available, using localStorage fallback');
-      return;
-    }
-    return new Promise((resolve) => {
-      try {
-        const request = indexedDB.open('LiquidAvatarCache', 1);
-        request.onupgradeneeded = (e) => {
-          const db = e.target.result;
-          if (!db.objectStoreNames.contains('avatars')) {
-            db.createObjectStore('avatars', { keyPath: 'agentId' });
-          }
-        };
-        request.onsuccess = (e) => {
-          this.db = e.target.result;
-          console.log('✅ AvatarCache initialized (IndexedDB)');
-          resolve();
-        };
-        request.onerror = () => {
-          console.warn('⚠️ IndexedDB init failed, using localStorage');
-          resolve();
-        };
-      } catch (err) {
-        console.warn('⚠️ IndexedDB error:', err);
-        resolve();
+/**
+ * Checks if an anime avatar is already rendered and cached on the server.
+ * @param {string} agentId - The ID of the agent.
+ * @returns {Promise<string|null>} - The image URL if cached, null otherwise.
+ */
+async function loadCachedAnimeAvatar(agentId) {
+  try {
+      const response = await fetch(`/api/avatars/${agentId}`);
+      if (response.ok) {
+          const data = await response.json();
+          return data.imageUrl; // e.g., "/storage/avatars/agent-123.png"
       }
-    });
-  },
-  
-  async get(agentId) {
-    // Fallback to localStorage if IndexedDB not available
-    if (!this.db) {
-      const raw = localStorage.getItem(`${AI_CONFIG.cachePrefix}${agentId}`);
-      return raw ? JSON.parse(raw) : null;
-    }
-    
-    return new Promise((resolve) => {
-      try {
-        const tx = this.db.transaction('avatars', 'readonly');
-        const req = tx.objectStore('avatars').get(agentId);
-        req.onsuccess = () => resolve(req.result || null);
-        req.onerror = () => resolve(null);
-      } catch (err) {
-        console.warn('⚠️ Cache get error:', err);
-        resolve(null);
-      }
-    });
-  },
-  
-  async set(agentId, data) {
-    const entry = { 
-      agentId, 
-      imageUrl: data.imageUrl, 
-      schemaSignature: data.schemaSignature,
-      timestamp: Date.now()
-    };
-    
-    // Fallback to localStorage if IndexedDB not available
-    if (!this.db) {
-      localStorage.setItem(`${AI_CONFIG.cachePrefix}${agentId}`, JSON.stringify(entry));
-      return;
-    }
-    
-    return new Promise((resolve) => {
-      try {
-        const tx = this.db.transaction('avatars', 'readwrite');
-        tx.objectStore('avatars').put(entry);
-        tx.oncomplete = resolve;
-        tx.onerror = () => resolve();
-      } catch (err) {
-        console.warn('⚠️ Cache set error:', err);
-        resolve();
-      }
-    });
-  },
-  
-  async clear(agentId) {
-    if (!this.db) {
-      localStorage.removeItem(`${AI_CONFIG.cachePrefix}${agentId}`);
-      return;
-    }
-    return new Promise((resolve) => {
-      try {
-        const tx = this.db.transaction('avatars', 'readwrite');
-        tx.objectStore('avatars').delete(agentId);
-        tx.oncomplete = resolve;
-        tx.onerror = () => resolve();
-      } catch (err) {
-        console.warn('⚠️ Cache clear error:', err);
-        resolve();
-      }
-    });
-  },
-  
-  async clearAll() {
-    if (!this.db) {
-      Object.keys(localStorage).forEach(key => {
-        if (key.startsWith(AI_CONFIG.cachePrefix)) {
-          localStorage.removeItem(key);
-        }
-      });
-      return;
-    }
-    return new Promise((resolve) => {
-      try {
-        const tx = this.db.transaction('avatars', 'readwrite');
-        tx.objectStore('avatars').clear();
-        tx.oncomplete = resolve;
-        tx.onerror = () => resolve();
-      } catch (err) {
-        console.warn('⚠️ Cache clearAll error:', err);
-        resolve();
-      }
-    });
+  } catch (err) {
+      console.warn(`[AvatarSystem] No cached avatar found for ${agentId}`);
   }
-};
+  return null;
+}
+
+/**
+* Manually triggers the server to generate and cache the anime avatar.
+* @param {string} agentId - The ID of the agent.
+*/
+async function triggerAnimeRender(agentId) {
+  const btn = document.getElementById(`render-btn-${agentId}`);
+  const imgContainer = document.getElementById(`avatar-container-${agentId}`);
+  
+  if (!btn || !imgContainer) {
+      console.error(`[AvatarSystem] UI elements not found for ${agentId}`);
+      return;
+  }
+
+  // 1. Show loading state
+  btn.innerHTML = '<span class="spinner"></span> Generating...';
+  btn.disabled = true;
+  btn.classList.add('rendering');
+
+  try {
+      // 2. Call the backend generation endpoint
+      const response = await fetch(`/api/avatars/${agentId}/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+      });
+      
+      if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.detail || `Generation failed: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      // 3. On success, replace the button with the rendered image
+      if (data.imageUrl) {
+          imgContainer.innerHTML = `
+              <img src="${data.imageUrl}" alt="Anime Avatar" class="anime-avatar-rendered" loading="lazy" />
+          `;
+          console.log(`[AvatarSystem] Successfully rendered and cached avatar for ${agentId}`);
+      } else {
+          throw new Error("No image URL returned from server");
+      }
+      
+  } catch (error) {
+      console.error(`[AvatarSystem] Error generating avatar for ${agentId}:`, error);
+      // Revert button to allow retry
+      btn.innerHTML = '❌ Failed. Click to retry';
+      btn.disabled = false;
+      btn.classList.remove('rendering');
+  }
+}
 
 // ── MAIN SYSTEM ────────────────────────────────────────────────────────────
 const AISystem = {
@@ -140,33 +88,57 @@ const AISystem = {
     if (this.initialized) return;
     await AvatarCache.init();
     this.initialized = true;
-    console.log('✅ AISystem initialized (v3.1)');
+    console.log('✅ AISystem initialized (v3.2 - Click-to-Render)');
   },
-  
-  async getAvatar(agent) {
-    if (!this.initialized) {
-      await this.init();
+
+  /**
+   * Checks if an avatar is already rendered. 
+   * Checks SERVER first (for cross-user consistency), then falls back to local cache.
+   * DOES NOT auto-generate.
+   */
+  async getCachedAvatar(agentId) {
+    if (!this.initialized) await this.init();
+
+    // 1. Check server cache first (Source of Truth)
+    try {
+      const res = await fetch(`/api/avatars/${agentId}`);
+      if (res.ok) {
+        const data = await res.json();
+        // Sync to local cache for faster subsequent loads
+        await AvatarCache.set(agentId, {
+          imageUrl: data.imageUrl,
+          schemaSignature: data.schemaSignature || {}
+        });
+        return data.imageUrl;
+      }
+    } catch (err) {
+      // Silently fail and fall back to local cache
     }
-    
-    // 1. Check local cache first
-    const cached = await AvatarCache.get(agent.id);
-    if (cached && cached.imageUrl) {
-      console.log(`✅ Cache hit for ${agent.id}`);
-      return cached.imageUrl;
+
+    // 2. Fallback to local IndexedDB/localStorage cache
+    const localCached = await AvatarCache.get(agentId);
+    if (localCached && localCached.imageUrl) {
+      return localCached.imageUrl;
     }
-    
-    // 2. Prevent duplicate concurrent requests
-    if (this.queue.has(agent.id)) {
-      console.log(`⏳ Request already queued for ${agent.id}`);
-      return this.queue.get(agent.id);
+
+    return null; // Not rendered yet
+  },
+
+  /**
+   * Manually triggers the backend to generate and cache the avatar.
+   * Called only when the user clicks an uncached avatar in Anime mode.
+   */
+  async triggerRender(agentId) {
+    if (this.queue.has(agentId)) {
+      console.log(`⏳ Render already in progress for ${agentId}`);
+      return this.queue.get(agentId);
     }
-    
-    // 3. Generate via backend
+
     const promise = (async () => {
       try {
-        console.log(`🎨 Requesting render for ${agent.id}...`);
+        console.log(`🎨 Manually requesting render for ${agentId}...`);
         
-        const res = await fetch(`/api/avatars/${agent.id}/generate`, { 
+        const res = await fetch(`/api/avatars/${agentId}/generate`, { 
           method: 'POST',
           headers: { 'Content-Type': 'application/json' }
         });
@@ -183,38 +155,31 @@ const AISystem = {
         }
         
         // Cache result locally for future loads
-        await AvatarCache.set(agent.id, {
+        await AvatarCache.set(agentId, {
           imageUrl: data.imageUrl,
           schemaSignature: data.schemaSignature || {}
         });
         
-        console.log(`✅ Render complete for ${agent.id}`);
+        console.log(`✅ Render complete and cached for ${agentId}`);
         return data.imageUrl;
         
       } catch (err) {
-        console.error(`❌ Render failed for ${agent.id}:`, err.message);
-        // Return null to trigger placeholder in UI
+        console.error(`❌ Render failed for ${agentId}:`, err.message);
         return null;
       } finally {
-        // Always clean up the queue
-        this.queue.delete(agent.id);
+        this.queue.delete(agentId);
       }
     })();
-    
-    // Store promise in queue to prevent duplicate requests
-    this.queue.set(agent.id, promise);
-    
-    // Return null immediately; UI will show placeholder until promise resolves
-    return null;
+
+    this.queue.set(agentId, promise);
+    return promise;
   },
-  
-  // Testing utility: clear cache for a specific agent
+
   async clearCache(agentId) {
     await AvatarCache.clear(agentId);
     console.log(`🗑️ Cache cleared for ${agentId}`);
   },
-  
-  // Testing utility: clear all cached avatars
+
   async clearAllCache() {
     await AvatarCache.clearAll();
     console.log('🗑️ All avatar cache cleared');
