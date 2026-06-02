@@ -239,22 +239,21 @@ function renderAvatar(selection) {
   });
 }
 
-// ─── CANVAS RENDERING (Anime via Cached Images) ─────────────────────────────
+// ─── CANVAS RENDERING (Anime via In-Memory Cache) ─────────────────────────────
 async function renderAnimeFrame() {
   if (!ctx || renderMode !== 'anime') return;
   
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = '#0F172A'; // Match your dark background
+  ctx.fillStyle = '#0F172A'; // Dark background to prevent white flashing
   ctx.fillRect(0, 0, width, height);
 
-  // Filter: only registered agents in anime mode
   const renderable = agentsData.nodes.filter(a => !a.cluster?.startsWith('discovered_via_'));
   
   for (const d of renderable) {
     if (!d.x || !d.y) continue;
     const size = d.avatar?.size ?? 30;
 
-    // ONLY check cache - do NOT auto-generate
+    // ✅ Uses getCachedAvatar which has IN-MEMORY caching (0 network calls after first check)
     const cachedUrl = await window.AISystem?.getCachedAvatar?.(d.id);
 
     if (cachedUrl) {
@@ -266,13 +265,12 @@ async function renderAnimeFrame() {
         img.onload = () => ctx.drawImage(img, d.x - size, d.y - size, size * 2, size * 2);
       }
     } else {
-      // Uncached placeholder - shows "Click" text
+      // Uncached placeholder
       ctx.fillStyle = '#334155';
       ctx.beginPath();
       ctx.arc(d.x, d.y, size * 0.8, 0, Math.PI * 2);
       ctx.fill();
       
-      // "Click to Generate" indicator
       ctx.fillStyle = '#94A3B8';
       ctx.font = '10px "IBM Plex Mono", monospace';
       ctx.textAlign = 'center';
@@ -395,10 +393,7 @@ function setupSimulation(w, h) {
   
   // Canvas click handler for anime mode only
   canvas.onclick = async (e) => {
-    if (renderMode !== 'anime') {
-      console.log('⚠️ Canvas click blocked in geometric mode');
-      return;
-    }
+    if (renderMode !== 'anime') return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -413,18 +408,11 @@ function setupSimulation(w, h) {
     if (closest) {
       console.log('🖱️ Canvas click:', closest.id);
     
-      // NEW: Check if it needs rendering
       const isCached = await window.AISystem?.getCachedAvatar?.(closest.id);
-    
       if (!isCached) {
-        // Trigger manual render
         console.log(`🎨 Triggering render for ${closest.id}...`);
-      
-        // The UI will show the queued state, and the animation loop 
-        // will automatically update once the promise resolves and caches.
         await window.AISystem?.triggerRender?.(closest.id);
       } else {
-        // Already cached, proceed with normal selection
         selectAgent(closest);
       }
     }

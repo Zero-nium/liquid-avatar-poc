@@ -1,14 +1,12 @@
 /**
-AI Avatar System v3.2 - Backend Integrated
-Calls backend to generate/render avatars securely.
-Loaded as classic script (no ES6 modules).
+AI Avatar System v3.3 - In-Memory Cache + Click-to-Render
+Prevents frame-by-frame network calls.
 */
 const AI_CONFIG = {
   cachePrefix: 'ai_avatar_',
   maxCacheSize: 100
 };
 
-// ─── CACHE MANAGER ──────────────────────────────────────────────────────────
 const AvatarCache = {
   db: null,
   async init() {
@@ -100,9 +98,7 @@ const AvatarCache = {
   async clearAll() {
     if (!this.db) {
       Object.keys(localStorage).forEach(key => {
-        if (key.startsWith(AI_CONFIG.cachePrefix)) {
-          localStorage.removeItem(key);
-        }
+        if (key.startsWith(AI_CONFIG.cachePrefix)) localStorage.removeItem(key);
       });
       return;
     }
@@ -120,44 +116,54 @@ const AvatarCache = {
   }
 };
 
-// ── MAIN SYSTEM ────────────────────────────────────────────────────────────
 const AISystem = {
   initialized: false,
   queue: new Map(),
-  
+  memoryCache: new Map(), // 🚀 CRITICAL: Prevents network calls on every animation frame
+
   async init() {
     if (this.initialized) return;
     await AvatarCache.init();
     this.initialized = true;
-    console.log('✅ AISystem initialized (v3.2 - Click-to-Render)');
+    console.log('✅ AISystem initialized (v3.3 - In-Memory Cache)');
   },
 
   async getCachedAvatar(agentId) {
     if (!this.initialized) await this.init();
 
-    // 1. Check server cache first (Source of Truth)
+    // 1. Check IN-MEMORY cache first (instant, 0 network cost)
+    if (this.memoryCache.has(agentId)) {
+      return this.memoryCache.get(agentId);
+    }
+
+    // 2. Check server cache (Source of Truth)
     try {
       const res = await fetch(`/api/avatars/${agentId}`);
       if (res.ok) {
         const data = await res.json();
-        // Sync to local cache for faster subsequent loads
+        const url = data.imageUrl;
+        
+        // Save to memory AND local cache
+        this.memoryCache.set(agentId, url);
         await AvatarCache.set(agentId, {
-          imageUrl: data.imageUrl,
+          imageUrl: url,
           schemaSignature: data.schemaSignature || {}
         });
-        return data.imageUrl;
+        return url;
       }
     } catch (err) {
-      // Silently fail and fall back to local cache
+      // Silently fail and fall back
     }
 
-    // 2. Fallback to local IndexedDB/localStorage cache
+    // 3. Fallback to local IndexedDB/localStorage cache
     const localCached = await AvatarCache.get(agentId);
     if (localCached && localCached.imageUrl) {
+      this.memoryCache.set(agentId, localCached.imageUrl);
       return localCached.imageUrl;
     }
 
-    return null; // Not rendered yet
+    // 4. Not rendered yet: return null (UI will show "Click" placeholder)
+    return null;
   },
 
   async triggerRender(agentId) {
@@ -169,7 +175,6 @@ const AISystem = {
     const promise = (async () => {
       try {
         console.log(`🎨 Manually requesting render for ${agentId}...`);
-        
         const res = await fetch(`/api/avatars/${agentId}/generate`, { 
           method: 'POST',
           headers: { 'Content-Type': 'application/json' }
@@ -181,12 +186,10 @@ const AISystem = {
         }
         
         const data = await res.json();
+        if (!data.imageUrl) throw new Error('No imageUrl in response');
         
-        if (!data.imageUrl) {
-          throw new Error('No imageUrl in response');
-        }
-        
-        // Cache result locally for future loads
+        // Cache result in memory and locally
+        this.memoryCache.set(agentId, data.imageUrl);
         await AvatarCache.set(agentId, {
           imageUrl: data.imageUrl,
           schemaSignature: data.schemaSignature || {}
@@ -194,7 +197,6 @@ const AISystem = {
         
         console.log(`✅ Render complete and cached for ${agentId}`);
         return data.imageUrl;
-        
       } catch (err) {
         console.error(`❌ Render failed for ${agentId}:`, err.message);
         return null;
@@ -208,18 +210,19 @@ const AISystem = {
   },
 
   async clearCache(agentId) {
+    this.memoryCache.delete(agentId);
     await AvatarCache.clear(agentId);
     console.log(`🗑️ Cache cleared for ${agentId}`);
   },
 
   async clearAllCache() {
+    this.memoryCache.clear();
     await AvatarCache.clearAll();
     console.log('🗑️ All avatar cache cleared');
   }
 };
 
-// ─── GLOBAL ATTACHMENT (Classic Script Loading) ─────────────────────────────
 if (typeof window !== 'undefined') {
   window.AISystem = AISystem;
-  console.log('✅ AISystem attached to window (classic script mode)');
+  console.log('✅ AISystem attached to window (v3.3)');
 }
