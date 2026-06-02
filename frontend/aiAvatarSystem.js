@@ -1,83 +1,124 @@
 /**
- * AI Avatar System v3.1 - Backend Integrated
- * Calls backend to generate/render avatars securely.
- * Loaded as classic script (no ES6 modules).
- */
-
+AI Avatar System v3.2 - Backend Integrated
+Calls backend to generate/render avatars securely.
+Loaded as classic script (no ES6 modules).
+*/
 const AI_CONFIG = {
   cachePrefix: 'ai_avatar_',
   maxCacheSize: 100
 };
 
 // ─── CACHE MANAGER ──────────────────────────────────────────────────────────
-/**
- * Checks if an anime avatar is already rendered and cached on the server.
- * @param {string} agentId - The ID of the agent.
- * @returns {Promise<string|null>} - The image URL if cached, null otherwise.
- */
-async function loadCachedAnimeAvatar(agentId) {
-  try {
-      const response = await fetch(`/api/avatars/${agentId}`);
-      if (response.ok) {
-          const data = await response.json();
-          return data.imageUrl; // e.g., "/storage/avatars/agent-123.png"
-      }
-  } catch (err) {
-      console.warn(`[AvatarSystem] No cached avatar found for ${agentId}`);
-  }
-  return null;
-}
-
-/**
-* Manually triggers the server to generate and cache the anime avatar.
-* @param {string} agentId - The ID of the agent.
-*/
-async function triggerAnimeRender(agentId) {
-  const btn = document.getElementById(`render-btn-${agentId}`);
-  const imgContainer = document.getElementById(`avatar-container-${agentId}`);
-  
-  if (!btn || !imgContainer) {
-      console.error(`[AvatarSystem] UI elements not found for ${agentId}`);
+const AvatarCache = {
+  db: null,
+  async init() {
+    if (!window.indexedDB) {
+      console.warn('⚠️ IndexedDB not available, using localStorage fallback');
       return;
-  }
-
-  // 1. Show loading state
-  btn.innerHTML = '<span class="spinner"></span> Generating...';
-  btn.disabled = true;
-  btn.classList.add('rendering');
-
-  try {
-      // 2. Call the backend generation endpoint
-      const response = await fetch(`/api/avatars/${agentId}/generate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
+    }
+    return new Promise((resolve) => {
+      try {
+        const request = indexedDB.open('LiquidAvatarCache', 1);
+        request.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains('avatars')) {
+            db.createObjectStore('avatars', { keyPath: 'agentId' });
+          }
+        };
+        request.onsuccess = (e) => {
+          this.db = e.target.result;
+          console.log('✅ AvatarCache initialized (IndexedDB)');
+          resolve();
+        };
+        request.onerror = () => {
+          console.warn('⚠️ IndexedDB init failed, using localStorage');
+          resolve();
+        };
+      } catch (err) {
+        console.warn('⚠️ IndexedDB error:', err);
+        resolve();
+      }
+    });
+  },
+  async get(agentId) {
+    if (!this.db) {
+      const raw = localStorage.getItem(`${AI_CONFIG.cachePrefix}${agentId}`);
+      return raw ? JSON.parse(raw) : null;
+    }
+    return new Promise((resolve) => {
+      try {
+        const tx = this.db.transaction('avatars', 'readonly');
+        const req = tx.objectStore('avatars').get(agentId);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      } catch (err) {
+        console.warn('⚠️ Cache get error:', err);
+        resolve(null);
+      }
+    });
+  },
+  async set(agentId, data) {
+    const entry = {
+      agentId,
+      imageUrl: data.imageUrl,
+      schemaSignature: data.schemaSignature,
+      timestamp: Date.now()
+    };
+    if (!this.db) {
+      localStorage.setItem(`${AI_CONFIG.cachePrefix}${agentId}`, JSON.stringify(entry));
+      return;
+    }
+    return new Promise((resolve) => {
+      try {
+        const tx = this.db.transaction('avatars', 'readwrite');
+        tx.objectStore('avatars').put(entry);
+        tx.oncomplete = resolve;
+        tx.onerror = () => resolve();
+      } catch (err) {
+        console.warn('⚠️ Cache set error:', err);
+        resolve();
+      }
+    });
+  },
+  async clear(agentId) {
+    if (!this.db) {
+      localStorage.removeItem(`${AI_CONFIG.cachePrefix}${agentId}`);
+      return;
+    }
+    return new Promise((resolve) => {
+      try {
+        const tx = this.db.transaction('avatars', 'readwrite');
+        tx.objectStore('avatars').delete(agentId);
+        tx.oncomplete = resolve;
+        tx.onerror = () => resolve();
+      } catch (err) {
+        console.warn('⚠️ Cache clear error:', err);
+        resolve();
+      }
+    });
+  },
+  async clearAll() {
+    if (!this.db) {
+      Object.keys(localStorage).forEach(key => {
+        if (key.startsWith(AI_CONFIG.cachePrefix)) {
+          localStorage.removeItem(key);
+        }
       });
-      
-      if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.detail || `Generation failed: ${response.status}`);
+      return;
+    }
+    return new Promise((resolve) => {
+      try {
+        const tx = this.db.transaction('avatars', 'readwrite');
+        tx.objectStore('avatars').clear();
+        tx.oncomplete = resolve;
+        tx.onerror = () => resolve();
+      } catch (err) {
+        console.warn('⚠️ Cache clearAll error:', err);
+        resolve();
       }
-      
-      const data = await response.json();
-      
-      // 3. On success, replace the button with the rendered image
-      if (data.imageUrl) {
-          imgContainer.innerHTML = `
-              <img src="${data.imageUrl}" alt="Anime Avatar" class="anime-avatar-rendered" loading="lazy" />
-          `;
-          console.log(`[AvatarSystem] Successfully rendered and cached avatar for ${agentId}`);
-      } else {
-          throw new Error("No image URL returned from server");
-      }
-      
-  } catch (error) {
-      console.error(`[AvatarSystem] Error generating avatar for ${agentId}:`, error);
-      // Revert button to allow retry
-      btn.innerHTML = '❌ Failed. Click to retry';
-      btn.disabled = false;
-      btn.classList.remove('rendering');
+    });
   }
-}
+};
 
 // ── MAIN SYSTEM ────────────────────────────────────────────────────────────
 const AISystem = {
@@ -91,11 +132,6 @@ const AISystem = {
     console.log('✅ AISystem initialized (v3.2 - Click-to-Render)');
   },
 
-  /**
-   * Checks if an avatar is already rendered. 
-   * Checks SERVER first (for cross-user consistency), then falls back to local cache.
-   * DOES NOT auto-generate.
-   */
   async getCachedAvatar(agentId) {
     if (!this.initialized) await this.init();
 
@@ -124,10 +160,6 @@ const AISystem = {
     return null; // Not rendered yet
   },
 
-  /**
-   * Manually triggers the backend to generate and cache the avatar.
-   * Called only when the user clicks an uncached avatar in Anime mode.
-   */
   async triggerRender(agentId) {
     if (this.queue.has(agentId)) {
       console.log(`⏳ Render already in progress for ${agentId}`);
@@ -187,10 +219,7 @@ const AISystem = {
 };
 
 // ─── GLOBAL ATTACHMENT (Classic Script Loading) ─────────────────────────────
-// This makes AISystem available globally without ES6 modules
 if (typeof window !== 'undefined') {
   window.AISystem = AISystem;
   console.log('✅ AISystem attached to window (classic script mode)');
 }
-
-// No export statement - this file is loaded as a classic script, not a module
