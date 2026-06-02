@@ -244,7 +244,7 @@ async function renderAnimeFrame() {
   if (!ctx || renderMode !== 'anime') return;
   
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = '#0F172A'; // Dark background to prevent white flashing
+  ctx.fillStyle = '#0F172A'; // Dark background
   ctx.fillRect(0, 0, width, height);
 
   const renderable = agentsData.nodes.filter(a => !a.cluster?.startsWith('discovered_via_'));
@@ -253,7 +253,7 @@ async function renderAnimeFrame() {
     if (!d.x || !d.y) continue;
     const size = d.avatar?.size ?? 30;
 
-    // ✅ Uses getCachedAvatar which has IN-MEMORY caching (0 network calls after first check)
+    // ✅ Uses getCachedAvatar (v3.3) - NO auto-generation
     const cachedUrl = await window.AISystem?.getCachedAvatar?.(d.id);
 
     if (cachedUrl) {
@@ -393,7 +393,10 @@ function setupSimulation(w, h) {
   
   // Canvas click handler for anime mode only
   canvas.onclick = async (e) => {
-    if (renderMode !== 'anime') return;
+    if (renderMode !== 'anime') {
+      console.log('⚠️ Canvas click blocked in geometric mode');
+      return;
+    }
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
