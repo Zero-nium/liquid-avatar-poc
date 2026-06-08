@@ -1660,27 +1660,30 @@ async def get_cached_avatar(agent_id: str):
 
 
 @app.post("/api/avatars/{agent_id}/generate")
-async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool = True):
+async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool = True, force: bool = False):
     """
     Generates and stores an avatar for the given agent.
-    Saves to local disk storage and updates DB cache to prevent re-rendering.
+    If force=True, it bypasses the cache and re-renders.
     """
     conn = await get_db()
     
-    # 1. Check persistent DB cache first
-    cached = await run_query(conn,
-        "SELECT image_url, schema_signature FROM avatar_renders WHERE agent_id = ?",
-        (agent_id,), fetch="one")
-    
-    if cached:
-        await conn.close()
-        return {"imageUrl": cached["image_url"], "status": "cached"}
-
-    # Get agent data for prompt construction
-    agent = await run_query(conn, "SELECT * FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
-    avatar_state = await run_query(conn,
-        "SELECT * FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1",
-        (agent_id,), fetch="one")
+    # 1. Check persistent DB cache first (UNLESS force is True)
+    if not force:
+        cached = await run_query(conn,
+            "SELECT image_url, schema_signature FROM avatar_renders WHERE agent_id = ?",
+            (agent_id,), fetch="one")
+        
+        if cached:
+            await conn.close()
+            return {"imageUrl": cached["image_url"], "status": "cached"}
+    else:
+        # If forcing, delete old DB entry and file to ensure a fresh render
+        logger.info(f"🔄 Force re-render requested for {agent_id}. Clearing old cache.")
+        await run_query(conn, "DELETE FROM avatar_renders WHERE agent_id = ?", (agent_id,))
+        for ext in [".png", ".svg"]:
+            file_path = os.path.join(STORAGE_DIR, f"{agent_id}{ext}")
+            if os.path.exists(file_path):
+                os.remove(file_path)
 
     if not agent:
         await conn.close()

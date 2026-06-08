@@ -166,16 +166,19 @@ const AISystem = {
     return null;
   },
 
-  async triggerRender(agentId) {
-    if (this.queue.has(agentId)) {
+  async triggerRender(agentId, force = false) {
+    if (this.queue.has(agentId) && !force) {
       console.log(`⏳ Render already in progress for ${agentId}`);
       return this.queue.get(agentId);
     }
 
     const promise = (async () => {
       try {
-        console.log(`🎨 Manually requesting render for ${agentId}...`);
-        const res = await fetch(`/api/avatars/${agentId}/generate`, { 
+        // Add ?force=true to the URL if requested
+        const url = force ? `/api/avatars/${agentId}/generate?force=true` : `/api/avatars/${agentId}/generate`;
+        
+        console.log(`🎨 Requesting render for ${agentId} (force=${force})...`);
+        const res = await fetch(url, { 
           method: 'POST',
           headers: { 'Content-Type': 'application/json' }
         });
@@ -195,7 +198,7 @@ const AISystem = {
           schemaSignature: data.schemaSignature || {}
         });
         
-        console.log(`✅ Render complete and cached for ${agentId}`);
+        console.log(`✅ Render complete for ${agentId}`);
         return data.imageUrl;
       } catch (err) {
         console.error(`❌ Render failed for ${agentId}:`, err.message);
