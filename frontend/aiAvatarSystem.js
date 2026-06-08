@@ -130,12 +130,14 @@ const AISystem = {
 
   async getCachedAvatar(agentId) {
     if (!this.initialized) await this.init();
-
+  
     // 1. Check IN-MEMORY cache first (instant, 0 network cost)
     if (this.memoryCache.has(agentId)) {
-      return this.memoryCache.get(agentId);
+      const cached = this.memoryCache.get(agentId);
+      // Return null if we've already determined this agent has no render
+      return cached === 'NOT_FOUND' ? null : cached;
     }
-
+  
     // 2. Check server cache (Source of Truth)
     try {
       const res = await fetch(`/api/avatars/${agentId}`);
@@ -150,35 +152,37 @@ const AISystem = {
           schemaSignature: data.schemaSignature || {}
         });
         return url;
+      } else if (res.status === 404) {
+        // Cache the "not found" state to prevent repeated network calls
+        this.memoryCache.set(agentId, 'NOT_FOUND');
+        return null;
       }
     } catch (err) {
       // Silently fail and fall back
     }
-
+  
     // 3. Fallback to local IndexedDB/localStorage cache
     const localCached = await AvatarCache.get(agentId);
     if (localCached && localCached.imageUrl) {
       this.memoryCache.set(agentId, localCached.imageUrl);
       return localCached.imageUrl;
     }
-
-    // 4. Not rendered yet: return null (UI will show "Click" placeholder)
+  
+    // 4. Not rendered yet: cache this state and return null
+    this.memoryCache.set(agentId, 'NOT_FOUND');
     return null;
-  }, // <--- Comma required here
+  },
 
-  async triggerRender(agentId, force = false) {
-    if (this.queue.has(agentId) && !force) {
+  async triggerRender(agentId) {
+    if (this.queue.has(agentId)) {
       console.log(`⏳ Render already in progress for ${agentId}`);
       return this.queue.get(agentId);
     }
-
+  
     const promise = (async () => {
       try {
-        // Add ?force=true to the URL if requested
-        const url = force ? `/api/avatars/${agentId}/generate?force=true` : `/api/avatars/${agentId}/generate`;
-        
-        console.log(`🎨 Requesting render for ${agentId} (force=${force})...`);
-        const res = await fetch(url, { 
+        console.log(`🎨 Manually requesting render for ${agentId}...`);
+        const res = await fetch(`/api/avatars/${agentId}/generate`, { 
           method: 'POST',
           headers: { 'Content-Type': 'application/json' }
         });
@@ -191,14 +195,14 @@ const AISystem = {
         const data = await res.json();
         if (!data.imageUrl) throw new Error('No imageUrl in response');
         
-        // Cache result in memory and locally
+        // Cache result in memory (overwrites 'NOT_FOUND') and locally
         this.memoryCache.set(agentId, data.imageUrl);
         await AvatarCache.set(agentId, {
           imageUrl: data.imageUrl,
           schemaSignature: data.schemaSignature || {}
         });
         
-        console.log(`✅ Render complete for ${agentId}`);
+        console.log(`✅ Render complete and cached for ${agentId}`);
         return data.imageUrl;
       } catch (err) {
         console.error(`❌ Render failed for ${agentId}:`, err.message);
@@ -207,10 +211,10 @@ const AISystem = {
         this.queue.delete(agentId);
       }
     })();
-
+  
     this.queue.set(agentId, promise);
     return promise;
-  }, // <--- CRITICAL COMMA HERE (This was likely missing)
+  },
 
   async clearCache(agentId) {
     this.memoryCache.delete(agentId);
