@@ -126,7 +126,7 @@ const AISystem = {
     await AvatarCache.init();
     this.initialized = true;
     console.log('✅ AISystem initialized (v3.3 - In-Memory Cache)');
-  },
+  }, // <--- Comma required here
 
   async getCachedAvatar(agentId) {
     if (!this.initialized) await this.init();
@@ -164,7 +164,7 @@ const AISystem = {
 
     // 4. Not rendered yet: return null (UI will show "Click" placeholder)
     return null;
-  },
+  }, // <--- Comma required here
 
   async triggerRender(agentId, force = false) {
     if (this.queue.has(agentId) && !force) {
@@ -210,13 +210,13 @@ const AISystem = {
 
     this.queue.set(agentId, promise);
     return promise;
-  },
+  }, // <--- CRITICAL COMMA HERE (This was likely missing)
 
   async clearCache(agentId) {
     this.memoryCache.delete(agentId);
     await AvatarCache.clear(agentId);
     console.log(`🗑️ Cache cleared for ${agentId}`);
-  },
+  }, // <--- Comma required here
 
   async clearAllCache() {
     this.memoryCache.clear();

@@ -1663,12 +1663,20 @@ async def get_cached_avatar(agent_id: str):
 async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool = True, force: bool = False):
     """
     Generates and stores an avatar for the given agent.
-    If force=True, it bypasses the cache and re-renders.
+    If force=True, bypasses cache and re-renders.
     """
     conn = await get_db()
     
-    # 1. Check persistent DB cache first (UNLESS force is True)
-    if not force:
+    # If forcing, delete old cache first
+    if force:
+        logger.info(f"🔄 Force re-render requested for {agent_id}. Clearing old cache.")
+        await run_query(conn, "DELETE FROM avatar_renders WHERE agent_id = ?", (agent_id,))
+        for ext in [".png", ".svg"]:
+            file_path = os.path.join(STORAGE_DIR, f"{agent_id}{ext}")
+            if os.path.exists(file_path):
+                os.remove(file_path)
+    else:
+        # Check persistent DB cache first (UNLESS force is True)
         cached = await run_query(conn,
             "SELECT image_url, schema_signature FROM avatar_renders WHERE agent_id = ?",
             (agent_id,), fetch="one")
@@ -1838,6 +1846,37 @@ async def clear_cached_avatar(agent_id: str):
             os.remove(file_path)
             
     return {"status": "cleared", "agent_id": agent_id}
+
+@app.delete("/api/avatars")
+async def clear_all_cached_avatars():
+    """Clear ALL cached avatar renders from DB and disk (for testing)."""
+    conn = await get_db()
+    
+    # Get all agent_ids with cached renders
+    renders = await run_query(conn, "SELECT agent_id FROM avatar_renders", fetch="all")
+    
+    # Delete all from database
+    await run_query(conn, "DELETE FROM avatar_renders")
+    if hasattr(conn, 'commit'):
+        await conn.commit()
+    await conn.close()
+    
+    # Delete all files from disk
+    deleted_count = 0
+    if os.path.exists(STORAGE_DIR):
+        for filename in os.listdir(STORAGE_DIR):
+            file_path = os.path.join(STORAGE_DIR, filename)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                deleted_count += 1
+    
+    logger.info(f"🗑️ Cleared {len(renders)} avatar renders from DB and {deleted_count} files from disk")
+    
+    return {
+        "status": "cleared",
+        "db_records_deleted": len(renders),
+        "files_deleted": deleted_count
+    }
 
 # ─── STATIC FILES & ROUTES ────────────────────────────────────────────────────
 

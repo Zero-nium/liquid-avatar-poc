@@ -475,10 +475,31 @@ function toggleLabels() {
   if (renderMode === 'geometric') node.call(renderAvatar);
 }
 
-function clearAvatarCache() {
-  if (window.AISystem?.clearAllCache) {
-    AISystem.clearAllCache();
+async function clearAvatarCache() {
+  try {
+    console.log('🗑️ Clearing server-side avatar cache...');
+    
+    // 1. Clear server-side cache first
+    const res = await fetch('/api/avatars', { method: 'DELETE' });
+    if (!res.ok) {
+      throw new Error(`Server cache clear failed: ${res.status}`);
+    }
+    
+    const data = await res.json();
+    console.log(`✅ Server cache cleared: ${data.db_records_deleted} DB records, ${data.files_deleted} files`);
+    
+    // 2. Clear local cache
+    if (window.AISystem?.clearAllCache) {
+      AISystem.clearAllCache();
+    }
+    
+    // 3. Reload to see fresh state
+    alert(`✅ Cache cleared!\n\nServer: ${data.db_records_deleted} records, ${data.files_deleted} files\nLocal: IndexedDB + Memory cleared\n\nReloading...`);
     location.reload();
+    
+  } catch (err) {
+    console.error('❌ Failed to clear cache:', err);
+    alert(`❌ Failed to clear cache: ${err.message}`);
   }
 }
 
