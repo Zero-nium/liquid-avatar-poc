@@ -1667,7 +1667,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
     """
     conn = await get_db()
     
-    # If forcing, delete old cache first
+    # 1. Handle Force Re-render: Delete old cache first
     if force:
         logger.info(f"🔄 Force re-render requested for {agent_id}. Clearing old cache.")
         await run_query(conn, "DELETE FROM avatar_renders WHERE agent_id = ?", (agent_id,))
@@ -1676,7 +1676,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
             if os.path.exists(file_path):
                 os.remove(file_path)
     else:
-        # Check persistent DB cache first (UNLESS force is True)
+        # 2. Check persistent DB cache first (UNLESS force is True)
         cached = await run_query(conn,
             "SELECT image_url, schema_signature FROM avatar_renders WHERE agent_id = ?",
             (agent_id,), fetch="one")
@@ -1684,14 +1684,12 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
         if cached:
             await conn.close()
             return {"imageUrl": cached["image_url"], "status": "cached"}
-    else:
-        # If forcing, delete old DB entry and file to ensure a fresh render
-        logger.info(f"🔄 Force re-render requested for {agent_id}. Clearing old cache.")
-        await run_query(conn, "DELETE FROM avatar_renders WHERE agent_id = ?", (agent_id,))
-        for ext in [".png", ".svg"]:
-            file_path = os.path.join(STORAGE_DIR, f"{agent_id}{ext}")
-            if os.path.exists(file_path):
-                os.remove(file_path)
+
+    # 3. Get agent data for prompt construction (THIS WAS MISSING!)
+    agent = await run_query(conn, "SELECT * FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
+    avatar_state = await run_query(conn,
+        "SELECT * FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1",
+        (agent_id,), fetch="one")
 
     if not agent:
         await conn.close()
@@ -1707,7 +1705,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
     file_path = os.path.join(STORAGE_DIR, f"{agent_id}.{file_ext}")
     relative_url = f"/storage/avatars/{agent_id}.{file_ext}"
 
-    # 2. Double-check if file already exists on disk (extra safety against DB desync)
+    # 4. Double-check if file already exists on disk (extra safety against DB desync)
     if os.path.exists(file_path):
         await run_query(conn, """
             INSERT OR REPLACE INTO avatar_renders (id, agent_id, image_url, schema_signature, rendered_at)
@@ -1720,7 +1718,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
         await conn.close()
         return {"imageUrl": relative_url, "status": "cached"}
 
-    # 3. Build prompt based on agent attributes
+    # 5. Build prompt based on agent attributes
     hair_styles = {3: "short cropped", 5: "bob cut", 6: "medium length", 8: "long layered", 10: "elaborate braided", 12: "flowing twin tails"}
     hair = hair_styles.get(complexity, "medium length")
     expressions = {"idle": "soft neutral", "output": "bright smile", "input": "focused gaze", "analysis": "thoughtful look"}
@@ -1737,7 +1735,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
     image_url_to_store = ""
     schema_sig = {}
 
-    # 4. Mock mode or Forced Fallback mode: Generate SVG
+    # 6. Mock mode or Forced Fallback mode: Generate SVG
     if mock or not use_fallback:
         logger.warning(f"🎭 Mock/Fallback mode for {agent_id}")
         svg = generate_local_avatar_svg(agent_id, hue, 0.7, complexity, agent["name"])
@@ -1747,7 +1745,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
         image_url_to_store = relative_url
         schema_sig = {"mock": mock, "fallback": not use_fallback, "hue": hue, "complexity": complexity, "source": "local_svg"}
     else:
-        # 5. Try Pollinations.ai with rate limiting and retry logic
+        # 7. Try Pollinations.ai with rate limiting and retry logic
         max_retries = 3
         retry_delay = 3.0
         
@@ -1801,7 +1799,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
                     if not use_fallback:
                         raise HTTPException(status_code=503, detail=f"External service unavailable: {str(e)}")
 
-        # 6. Fallback to local SVG if Pollinations failed but use_fallback is True
+        # 8. Fallback to local SVG if Pollinations failed but use_fallback is True
         if not image_generated and use_fallback:
             logger.warning(f"🔄 Falling back to local SVG generation for {agent_id}")
             file_path = os.path.join(STORAGE_DIR, f"{agent_id}.svg")
@@ -1813,7 +1811,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
             image_url_to_store = relative_url
             schema_sig = {"fallback": True, "hue": hue, "complexity": complexity, "source": "local_svg"}
 
-    # 7. Final DB update
+    # 9. Final DB update
     if image_generated:
         await run_query(conn, """
             INSERT OR REPLACE INTO avatar_renders (id, agent_id, image_url, schema_signature, rendered_at)
