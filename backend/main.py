@@ -1880,7 +1880,7 @@ async def clear_all_cached_avatars():
 
 # ─── STATIC FILES & ROUTES ────────────────────────────────────────────────────
 
-# 1. Mount specific API/Storage paths FIRST (so they don't get caught by the frontend)
+# 1. Mount specific API/Storage paths FIRST (so they don't get caught by the frontend catch-all)
 app.mount("/storage/avatars", StaticFiles(directory=STORAGE_DIR), name="avatar_storage")
 
 # 2. Mount Frontend (Catch-all) LAST
