@@ -115,6 +115,13 @@ AVATAR_GENERATION_LOCK = asyncio.Lock()
 LAST_GENERATION_TIME = 0
 MIN_GENERATION_INTERVAL = 2.0  # seconds between requests
 
+# ── AVATAR PROMPT TEMPLATE ──────────────────────────────────────────────────────
+AVATAR_PROMPT_TEMPLATE = (
+    "anime portrait of a character, {hair_style} {hair_color} hair, "
+    "{expression} expression, {accessories}, high quality, detailed, "
+    "studio lighting, clean background, masterpiece"
+)
+
 # ─── RATE LIMITING ────────────────────────────────────────────────────────────
 
 class RateLimiter:
@@ -1619,7 +1626,6 @@ def generate_local_avatar_svg(agent_id: str, hue: float, sat: float, complexity:
 async def wait_for_rate_limit():
     """Enforce rate limiting for Pollinations.ai (1 request at a time)."""
     global LAST_GENERATION_TIME
-    
     async with AVATAR_GENERATION_LOCK:
         now = time.time()
         time_since_last = now - LAST_GENERATION_TIME
@@ -1630,13 +1636,6 @@ async def wait_for_rate_limit():
             await asyncio.sleep(wait_time)
         
         LAST_GENERATION_TIME = time.time()
-
-        # ── MISSING TEMPLATE ADDED HERE ──────────────────────────────────────────────
-        AVATAR_PROMPT_TEMPLATE = (
-        "anime portrait of a character, {hair_style} {hair_color} hair, "
-        "{expression} expression, {accessories}, high quality, detailed, "
-        "studio lighting, clean background, masterpiece"
-    )
 
 # ─── AVATAR RENDERING CACHE ENDPOINTS ─────────────────────────────────────────
 
