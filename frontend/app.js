@@ -391,6 +391,8 @@ function setupSimulation(w, h) {
   }
 
   canvas.onclick = async (e) => {
+    console.log('🖱️ Canvas clicked, renderMode:', renderMode);  // DEBUG LOG
+
     if (renderMode !== 'anime') {
       console.log('⚠️ Canvas click blocked in geometric mode');
       return;
@@ -398,6 +400,8 @@ function setupSimulation(w, h) {
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+
+    console.log(' Click position:', x, y);  // DEBUG LOG
 
     let closest = null, minDist = 40;
     agentsData.nodes.filter(a => !a.cluster?.startsWith('discovered_via_')).forEach(d => {
@@ -416,6 +420,8 @@ function setupSimulation(w, h) {
       } else {
         selectAgent(closest);
       }
+    } else {
+      console.log('❌ No agent found near click');  // DEBUG LOG
     }
   };
   
@@ -435,6 +441,7 @@ function switchRenderEngine() {
   if (renderMode === 'anime') {
     canvas.style.display = 'block';
     canvas.style.pointerEvents = 'auto';
+    canvas.style.cursor = 'pointer';
     svg.style('pointer-events', 'none');
     svg.style('opacity', '0');
     
@@ -443,6 +450,7 @@ function switchRenderEngine() {
   } else {
     canvas.style.display = 'none';
     canvas.style.pointerEvents = 'none';
+    canvas.style.cursor = 'default';
     svg.style('pointer-events', 'auto');
     svg.style('opacity', '1'); 
     
