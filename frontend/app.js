@@ -240,8 +240,13 @@ function renderAvatar(selection) {
 async function renderAnimeFrame() {
   if (!ctx || renderMode !== 'anime') return;
   
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = '#0F172A'; // Dark background for anime mode
+  // Pastel pink gradient background
+  const gradient = ctx.createLinearGradient(0, 0, width, height);
+  gradient.addColorStop(0, '#FFF0F5');  // Lavender Blush
+  gradient.addColorStop(0.5, '#FFE4E1'); // Misty Rose
+  gradient.addColorStop(1, '#FFB6C1');   // Light Pink
+  
+  ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, width, height);
 
   const renderable = agentsData.nodes.filter(a => !a.cluster?.startsWith('discovered_via_'));
@@ -261,19 +266,21 @@ async function renderAnimeFrame() {
         img.onload = () => ctx.drawImage(img, d.x - size, d.y - size, size * 2, size * 2);
       }
     } else {
-      ctx.fillStyle = '#334155';
+      // Pastel pink placeholder
+      ctx.fillStyle = '#FFB6C1';  // Light Pink
       ctx.beginPath();
       ctx.arc(d.x, d.y, size * 0.8, 0, Math.PI * 2);
       ctx.fill();
       
-      ctx.fillStyle = '#94A3B8';
+      // Softer text
+      ctx.fillStyle = '#DB7093';  // Pale Violet Red
       ctx.font = '10px "IBM Plex Mono", monospace';
       ctx.textAlign = 'center';
       ctx.fillText('Click', d.x, d.y + 4);
     }
 
     if (showLabels) {
-      ctx.fillStyle = '#94A3B8';
+      ctx.fillStyle = '#C71585';  // Medium Violet Red
       ctx.font = '11px "IBM Plex Mono", monospace';
       ctx.textAlign = 'center';
       ctx.fillText(d.name, d.x, d.y + size * 2.2);
@@ -376,7 +383,9 @@ function setupSimulation(w, h) {
     canvas.style.pointerEvents = 'none';
     canvas.style.display = 'none';
   } else {
+    // Anime mode: canvas receives events
     svg.style('pointer-events', 'none');
+    svg.style('opacity', '0');
     canvas.style.pointerEvents = 'auto';
     canvas.style.display = 'block';
   }
@@ -427,6 +436,7 @@ function switchRenderEngine() {
     canvas.style.display = 'block';
     canvas.style.pointerEvents = 'auto';
     svg.style('pointer-events', 'none');
+    svg.style('opacity', '0');
     
     if (animationFrame) cancelAnimationFrame(animationFrame);
     renderAnimeFrame();
@@ -434,6 +444,7 @@ function switchRenderEngine() {
     canvas.style.display = 'none';
     canvas.style.pointerEvents = 'none';
     svg.style('pointer-events', 'auto');
+    svg.style('opacity', '1'); 
     
     if (animationFrame) cancelAnimationFrame(animationFrame);
     
