@@ -2232,12 +2232,12 @@ def build_prompt_payload(agent_id: str, preference_dna: Dict, action_dna: Dict) 
 class RenderService:
     """
     Abstracted render service. 
-    Using Replicate for Animagine XL 3.1 (Accessible in HK, High Quality Anime).
+    Using Replicate for Animagine XL 3.1.
     """
     
     REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
-    # Replicate URL for Animagine XL 3.1 with wait_for_completion
-    REPLICATE_MODEL_URL = "https://api.replicate.com/v1/models/cjwbw/animagine-xl-3.1/predictions?wait=true"
+    # FIXED: Updated to the correct official model owner on Replicate
+    REPLICATE_MODEL_URL = "https://api.replicate.com/v1/models/cagliostrolab/animagine-xl-3.1/predictions?wait=true"
 
     @staticmethod
     async def render(prompt: str, negative_prompt: str, agent_id: str,
@@ -2286,7 +2286,7 @@ class RenderService:
                 # Replicate returns a list of URLs in the output
                 if "output" in data and isinstance(data["output"], list) and len(data["output"]) > 0:
                     image_url = data["output"][0]
-                    logger.info(f"️ Downloading generated image from {image_url}")
+                    logger.info(f"✅ Downloading generated image from {image_url}")
                     img_res = await client.get(image_url)
                     return img_res.content
                 else:
