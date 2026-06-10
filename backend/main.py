@@ -2906,9 +2906,6 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
             if not use_fallback:
                 await conn.close()
                 raise HTTPException(status_code=500, detail=f"Image generation failed: {str(e)}")
-            # If use_fallback is True, it will naturally fall through to Step 9 (Local SVG)
-                    safe_prompt = urllib.parse.quote(f"anime portrait, {prompt}, clean background, high quality")
-                    img_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=256&height=256&nologo=true&seed={agent_id}"
                     
                     logger.info(f"🎨 Fetching avatar from Pollinations.ai for {agent_id} (attempt {attempt+1}/{max_retries})")
                     img_res = await client.get(img_url)
