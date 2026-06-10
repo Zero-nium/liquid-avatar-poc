@@ -2,8 +2,7 @@
 Liquid Avatar PoC - Backend API
 FastAPI + SQLite/Pydantic + Optional Turso
 Free-tier optimized: single file, minimal deps, persistent storage ready.
-
-Schema v1.3: Avatar Rendering with Rate Limiting + Fallback
+Schema v1.4: Dual-DNA Avatar Rendering System
 Beacon Bridge: Dynamic agent discovery & real-time propagation
 """
 
@@ -31,12 +30,12 @@ import uuid
 import httpx
 import base64
 import urllib.parse
+import math
 
 # Import Minds gateway router (defined after app creation)
 from minds_gateway import router as minds_router
 
 # ─── LOGGING CONFIGURATION ────────────────────────────────────────────────────
-
 class JSONFormatter(logging.Formatter):
     """Structured JSON logging for easy parsing/alerting."""
     def format(self, record):
@@ -61,16 +60,15 @@ def setup_logging(log_level: str = "INFO", log_file: str = None):
     """Configure root logger with JSON formatting."""
     logger = logging.getLogger()
     logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
-    
     console = logging.StreamHandler(sys.stdout)
     console.setFormatter(JSONFormatter())
     logger.addHandler(console)
-    
+
     if log_file:
         file_handler = logging.FileHandler(log_file)
         file_handler.setFormatter(JSONFormatter())
         logger.addHandler(file_handler)
-    
+
     return logger
 
 def log_agent_event(logger, event_type: str, agent_id: str, message: str, **extra):
@@ -81,7 +79,6 @@ def log_agent_event(logger, event_type: str, agent_id: str, message: str, **extr
 logger = setup_logging(log_level=os.getenv("LOG_LEVEL", "INFO"))
 
 # ─── TURSO/LIBSQL SUPPORT ─────────────────────────────────────────────────────
-
 LIBSQL_AVAILABLE = False
 LIBSQL_ERROR = None
 create_client = None
@@ -94,11 +91,9 @@ except ImportError as e:
     LIBSQL_ERROR = str(e)
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
-
 DB_PATH = os.getenv("DB_PATH", "./liquid_avatar.db")
-SCHEMA_VERSION = "1.3"  # Updated for avatar rendering
+SCHEMA_VERSION = "1.4"  # Updated for Dual-DNA avatar rendering
 API_KEY = os.getenv("LIQUID_AVATAR_API_KEY", "dev-key-change-me-for-prod")
-
 TURSO_URL = os.getenv("TURSO_URL")
 TURSO_TOKEN = os.getenv("TURSO_TOKEN")
 USE_TURSO = LIBSQL_AVAILABLE and TURSO_URL and TURSO_TOKEN
@@ -106,7 +101,7 @@ USE_TURSO = LIBSQL_AVAILABLE and TURSO_URL and TURSO_TOKEN
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(os.path.dirname(BASE_DIR), "frontend")
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "storage", "avatars")
-os.makedirs(STORAGE_DIR, exist_ok=True)  # Automatically creates the directory (Handles Step 2)
+os.makedirs(STORAGE_DIR, exist_ok=True)
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -115,7 +110,7 @@ AVATAR_GENERATION_LOCK = asyncio.Lock()
 LAST_GENERATION_TIME = 0
 MIN_GENERATION_INTERVAL = 2.0  # seconds between requests
 
-# ── AVATAR PROMPT TEMPLATE ──────────────────────────────────────────────────────
+# ─── AVATAR PROMPT TEMPLATE (GLOBAL SCOPE) ────────────────────────────────────
 AVATAR_PROMPT_TEMPLATE = (
     "anime portrait of a character, {hair_style} {hair_color} hair, "
     "{expression} expression, {accessories}, high quality, detailed, "
@@ -123,13 +118,12 @@ AVATAR_PROMPT_TEMPLATE = (
 )
 
 # ─── RATE LIMITING ────────────────────────────────────────────────────────────
-
 class RateLimiter:
     def __init__(self, max_requests: int, window_seconds: int):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self.requests = {}  # type: Dict[str, deque]
-    
+
     def is_allowed(self, identifier: str) -> bool:
         now = time.time()
         if identifier not in self.requests:
@@ -146,7 +140,6 @@ agent_discover_limit = RateLimiter(max_requests=10, window_seconds=60)
 avatar_render_limit = RateLimiter(max_requests=3, window_seconds=300)  # 3 renders per 5 min
 
 # ─── DATA MODELS ──────────────────────────────────────────────────────────────
-
 class Proficiency(BaseModel):
     skill: str
     level: float = Field(ge=0.0, le=1.0)
@@ -232,8 +225,24 @@ class AvatarRenderRequest(BaseModel):
     imageUrl: str
     schemaSignature: Dict[str, Any]
 
-# ─── DATABASE UTILS (ASYNC) ───────────────────────────────────────────────────
+# ─── DUAL-DNA DATA MODELS ─────────────────────────────────────────────────────
+class AgentDNASubmission(BaseModel):
+    """Agent-submitted Dual-DNA for avatar generation."""
+    preference_dna: Dict[str, Any]
+    action_dna: Dict[str, Any]
+    schema_version: str = "v1.1.1"
 
+class RenderStatusResponse(BaseModel):
+    """Response for render status check."""
+    agent_id: str
+    has_dna: bool
+    has_render: bool
+    render_count: int = 0
+    last_rendered_at: Optional[str] = None
+    action_dna_delta: Optional[float] = None
+    needs_rerender: bool = False
+
+# ─── DATABASE UTILS (ASYNC) ───────────────────────────────────────────────────
 async def get_db():
     if USE_TURSO:
         return create_client(url=TURSO_URL, auth_token=TURSO_TOKEN)
@@ -268,7 +277,6 @@ async def run_query(db, sql: str, params: tuple = None, fetch: str = None):
 
 async def init_db():
     conn = await get_db()
-    
     tables = [
         """CREATE TABLE IF NOT EXISTS agents (
             agent_id TEXT PRIMARY KEY,
@@ -340,11 +348,37 @@ async def init_db():
             rendered_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
         )""",
+        # NEW: Dual-DNA storage table
+        """CREATE TABLE IF NOT EXISTS agent_dna (
+            agent_id TEXT PRIMARY KEY,
+            preference_dna TEXT NOT NULL,
+            action_dna TEXT NOT NULL,
+            schema_version TEXT DEFAULT 'v1.1.1',
+            last_rendered_action_dna TEXT,
+            last_rendered_at TEXT,
+            render_count INTEGER DEFAULT 0,
+            submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
+        )""",
+        # NEW: Render audit trail for provenance
+        """CREATE TABLE IF NOT EXISTS render_audit_trail (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            render_id TEXT NOT NULL,
+            expression_axes TEXT,
+            accent_color TEXT,
+            accent_blend TEXT,
+            prompt_hash TEXT,
+            render_service TEXT,
+            schema_version TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
+        )""",
     ]
-    
+
     for stmt in tables:
         await execute_sql(conn, stmt)
-    
+
     if hasattr(conn, 'commit'):
         await conn.commit()
     await conn.close()
@@ -362,27 +396,25 @@ async def seed_ontology():
         ("research", 210, json.dumps(["#2563EB", "#60A5FA"]), "circle"),
         ("general", 180, json.dumps(["#6B7280", "#D1D5DB"]), "hexagon"),
     ]
-    
     for domain, hue, spectrum, geom in canonical:
         await run_query(conn, """
             INSERT OR IGNORE INTO ontology (domain, base_hue, spectrum, geometry_hint)
             VALUES (?, ?, ?, ?)
         """, (domain, hue, spectrum, geom))
-    
+
     if hasattr(conn, 'commit'):
         await conn.commit()
     await conn.close()
 
 async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficiency], activity_status: str, agent_role: Optional[str] = None) -> AvatarSignature:
     """Compute avatar visual signature. Priority: Role > Skill Domain."""
-
     forced_shape = None
     role_based_hue = None
 
     if agent_role:
         role_lower = agent_role.lower()
-        logger.info(f"Schema v1.3: Processing role '{role_lower}' for agent {agent_id}")
-    
+        logger.info(f"Schema v1.4: Processing role '{role_lower}' for agent {agent_id}")
+
         council_shapes = {
             "conductor": 10, "auditor": 8, "architect": 6,
             "optimizer": 3, "chronicler": 12, "chronicle": 12, "general": 5
@@ -391,14 +423,14 @@ async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficienc
             "conductor": 180, "architect": 270, "optimizer": 45,
             "auditor": 210, "chronicler": 300, "chronicle": 300, "general": 180
         }
-    
+
         if role_lower in council_shapes:
             forced_shape = council_shapes[role_lower]
         if role_lower in role_hues:
             role_based_hue = role_hues[role_lower]
-
+ 
     conn = await get_db()
-    
+
     role_hues_fallback = {
         "conductor": 180, "architect": 270, "optimizer": 45,
         "auditor": 210, "chronicler": 300, "chronicle": 300, "general": 180
@@ -446,7 +478,7 @@ async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficienc
         shape_complexity = 8
     else:
         shape_complexity = 12
-    
+
     if geometry_hint == "circle":
         shape_complexity = 12
     elif geometry_hint == "triangle":
@@ -455,16 +487,16 @@ async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficienc
         shape_complexity = 6
     elif geometry_hint == "octagon":
         shape_complexity = 8
-    
+
     size = 20 + (skill_count * 3) + (avg_level * 15)
     saturation = 0.5 + (avg_level * 0.5)
     pulse_rate = 1.0 + (avg_level * 2.0)
-    
+
     if forced_shape is not None:
         shape_complexity = forced_shape
 
     await conn.close()
-    
+
     return AvatarSignature(
         base_hue=base_hue,
         saturation=saturation,
@@ -475,26 +507,24 @@ async def compute_avatar_signature(agent_id: str, proficiencies: List[Proficienc
     )
 
 # ─── AUTH HELPERS ─────────────────────────────────────────────────────────────
-
 async def verify_write_key(key: str = Security(api_key_header)):
     if key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API key")
     return key
 
 # ─── WEBSOCKET MANAGER ────────────────────────────────────────────────────────
-
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
-    
+
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
-    
+
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
-    
+
     async def broadcast(self, message: dict):
         for connection in self.active_connections[:]:
             try:
@@ -514,12 +544,10 @@ async def broadcast_swarm_update(update_type: str, data: Optional[dict] = None):
         logging.error(f"Broadcast failed: {e}", exc_info=True)
 
 # ─── FASTAPI APP ──────────────────────────────────────────────────────────────
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
     await seed_ontology()
-    
     conn = await get_db()
     count = await run_query(conn, "SELECT COUNT(*) as c FROM agents", fetch="one")
     if count and count["c"] == 0:
@@ -536,13 +564,13 @@ async def lifespan(app: FastAPI):
             await conn.commit()
         log_agent_event(logger, "auto_seed", "system", "Seeded mock swarm for fresh deploy")
     await conn.close()
-    
+
     log_agent_event(logger, "startup", "system", "Liquid Avatar API started", schema_version=SCHEMA_VERSION)
     yield
     log_agent_event(logger, "shutdown", "system", "Liquid Avatar API shutting down")
 
 # Create app instance FIRST
-app = FastAPI(title="Liquid Avatar", version="1.3", lifespan=lifespan)
+app = FastAPI(title="Liquid Avatar", version="1.4", lifespan=lifespan)
 
 # Add middleware
 app.add_middleware(
@@ -555,54 +583,56 @@ app.add_middleware(
 # Register routers AFTER app exists
 app.include_router(minds_router)
 
-# ─── ENDPOINTS ────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# ═══ EXISTING ENDPOINTS (PRESERVED) ═══════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 
+# ─── ENDPOINTS ────────────────────────────────────────────────────────────────
 @app.post("/agents/report", response_model=AgentState, dependencies=[Depends(verify_write_key)])
 async def report_agent_state(report: AgentReport):
     conn = await get_db()
     agent_row = await run_query(conn, "SELECT * FROM agents WHERE agent_id = ?", (report.agent_id,), fetch="one")
-    
     if not agent_row:
         log_agent_event(logger, "report_error", report.agent_id, "Agent not found for report")
         await conn.close()
         raise HTTPException(status_code=404, detail=f"Agent {report.agent_id} not found")
-    
+
     now = datetime.now(timezone.utc).isoformat()
-    
+
     for p in report.proficiencies:
         await run_query(conn, """
             INSERT INTO proficiencies (agent_id, skill, level, category, timestamp)
             VALUES (?, ?, ?, ?, ?)
         """, (report.agent_id, p.skill, p.level, p.category, now))
-    
+
     await run_query(conn, """
         INSERT INTO activity_log (agent_id, status, task, timestamp)
         VALUES (?, ?, ?, ?)
     """, (report.agent_id, report.activity_status, report.current_task, now))
-    
+
     await run_query(conn, "UPDATE agents SET last_reported = ? WHERE agent_id = ?", (now, report.agent_id))
-    
+
     avatar = await compute_avatar_signature(report.agent_id, report.proficiencies, report.activity_status, report.role)
-    
+
     await run_query(conn, """
         INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (report.agent_id, avatar.base_hue, avatar.saturation, avatar.shape_complexity,
           avatar.pulse_rate, avatar.size, avatar.dynamics_state, now))
-    
+
     if hasattr(conn, 'commit'):
         await conn.commit()
     await conn.close()
-    
+
     log_agent_event(logger, "agent_reported", report.agent_id, 
                    f"Agent reported {len(report.proficiencies)} proficiencies",
                    status=report.activity_status)
-    
+
     asyncio.create_task(broadcast_swarm_update("agent_updated", {
         "agent_id": report.agent_id,
         "status": report.activity_status
     }))
-    
+
     return AgentState(
         agent_id=report.agent_id,
         identity=AgentIdentity(
@@ -641,18 +671,17 @@ async def register_agent(agent_id: str, name: str, initialized_by: Optional[str]
 async def agent_self_discover(request: AgentDiscoverRequest):
     conn = await get_db()
     now = datetime.now(timezone.utc).isoformat()
-    
     await run_query(conn, """
         INSERT OR REPLACE INTO agents (agent_id, name, initialized_by, swarm_cluster, role, last_reported)
         VALUES (?, ?, ?, ?, ?, ?)
     """, (request.agent_id, request.name, request.initialized_by, request.swarm_cluster, request.role, now))
-    
+
     if request.initialized_by:
         await run_query(conn, """
             INSERT OR IGNORE INTO agent_connections (source_id, target_id, connection_type, created_at)
             VALUES (?, ?, 'initialized', ?)
         """, (request.initialized_by, request.agent_id, now))
-    
+
     if request.proficiencies:
         for p in request.proficiencies:
             exists = await run_query(conn, """
@@ -663,38 +692,38 @@ async def agent_self_discover(request: AgentDiscoverRequest):
                     INSERT INTO proficiencies (agent_id, skill, level, category, timestamp)
                     VALUES (?, ?, ?, ?, ?)
                 """, (request.agent_id, p.skill, p.level, p.category, now))
-    
+
     await run_query(conn, """
         INSERT INTO activity_log (agent_id, status, task, timestamp)
         VALUES (?, ?, ?, ?)
     """, (request.agent_id, request.activity_status, request.current_task, now))
-    
+
     avatar = await compute_avatar_signature(request.agent_id, request.proficiencies or [], request.activity_status, request.role)
-    
+
     await run_query(conn, """
         INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (request.agent_id, avatar.base_hue, avatar.saturation, avatar.shape_complexity,
           avatar.pulse_rate, avatar.size, avatar.dynamics_state, now))
-    
+
     if hasattr(conn, 'commit'):
         await conn.commit()
     await conn.close()
-    
+
     log_agent_event(logger, "agent_discovered", request.agent_id,
                    f"Agent {request.name} self-discovered with {len(request.proficiencies or [])} proficiencies",
                    role=request.role, cluster=request.swarm_cluster)
-    
+
     asyncio.create_task(broadcast_swarm_update("agent_registered", {
         "agent_id": request.agent_id,
         "name": request.name,
         "role": request.role
     }))
-    
+
     return AgentState(
         agent_id=request.agent_id,
         identity=AgentIdentity(name=request.name, initialized_by=request.initialized_by,
-                              swarm_cluster=request.swarm_cluster, role=request.role),
+                               swarm_cluster=request.swarm_cluster, role=request.role),
         proficiencies=request.proficiencies or [],
         activity={"status": request.activity_status, "task": request.current_task, "timestamp": now},
         avatar_signature=avatar,
@@ -711,15 +740,14 @@ async def agent_self_discover(request: AgentDiscoverRequest):
 async def agent_heartbeat(request: HeartbeatRequest):
     conn = await get_db()
     now = datetime.now(timezone.utc).isoformat()
-    
     agent = await run_query(conn, "SELECT name FROM agents WHERE agent_id = ?", (request.agent_id,), fetch="one")
     if not agent:
         log_agent_event(logger, "heartbeat_error", request.agent_id, "Agent not registered for heartbeat")
         await conn.close()
         raise HTTPException(status_code=404, detail="Agent not registered")
-    
+
     await run_query(conn, "UPDATE agents SET last_reported = ? WHERE agent_id = ?", (now, request.agent_id))
-    
+
     if request.activity_status or request.current_task:
         await run_query(conn, """
             INSERT INTO activity_log (agent_id, status, task, timestamp)
@@ -732,66 +760,65 @@ async def agent_heartbeat(request: HeartbeatRequest):
             FROM avatar_states WHERE agent_id = ?
             ORDER BY computed_at DESC LIMIT 1
         """, (request.activity_status or "idle", now, request.agent_id))
-    
+
     if hasattr(conn, 'commit'):
         await conn.commit()
     await conn.close()
-    
+
     log_agent_event(logger, "agent_heartbeat", request.agent_id,
                    f"Heartbeat received: {request.activity_status or 'idle'}",
                    task=request.current_task)
-    
+
     asyncio.create_task(broadcast_swarm_update("agent_updated", {
         "agent_id": request.agent_id,
         "status": request.activity_status or "idle"
     }))
-    
+
     return {"status": "ok", "agent_id": request.agent_id, "timestamp": now}
 
 @app.post("/agents/activity", dependencies=[Depends(verify_write_key)])
 async def report_agent_activity(activity: ActivityMetrics):
     conn = await get_db()
     now = activity.timestamp or datetime.now(timezone.utc).isoformat()
-    
     agent = await run_query(conn, "SELECT name FROM agents WHERE agent_id = ?", (activity.agent_id,), fetch="one")
     if not agent:
         log_agent_event(logger, "activity_error", activity.agent_id, "Agent not registered for activity report")
         await conn.close()
         raise HTTPException(status_code=404, detail="Agent not registered")
-    
+
     await run_query(conn, """
         INSERT INTO activity_log (agent_id, status, task, timestamp)
         VALUES (?, ?, ?, ?)
     """, (activity.agent_id, activity.status, activity.task, now))
-    
+
     if activity.metrics:
         metrics_json = json.dumps(activity.metrics)
         await run_query(conn, """
             INSERT INTO activity_log (agent_id, status, task, timestamp)
             VALUES (?, ?, ?, ?)
         """, (activity.agent_id, "metrics", f"metrics:{metrics_json}", now))
-    
+
     await run_query(conn, """
         INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
         SELECT agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, ?, ?
         FROM avatar_states WHERE agent_id = ?
         ORDER BY computed_at DESC LIMIT 1
     """, (activity.status, now, activity.agent_id))
-    
+
     if hasattr(conn, 'commit'):
         await conn.commit()
     await conn.close()
-    
+
     log_agent_event(logger, "agent_activity", activity.agent_id,
                    f"Activity reported: {activity.status}",
                    task=activity.task, metrics=bool(activity.metrics))
-    
+
     asyncio.create_task(broadcast_swarm_update("agent_updated", {
         "agent_id": activity.agent_id,
         "status": activity.status,
         "task": activity.task,
     }))
-    
+
     return {
         "status": "ok",
         "agent_id": activity.agent_id,
@@ -804,16 +831,15 @@ async def report_agent_activity(activity: ActivityMetrics):
 @app.post("/agents/register/public")
 async def public_register_agent(request: Request, data: PublicRegisterRequest):
     client_ip = request.client.host if request.client else "unknown"
-    
     if not public_register_limit.is_allowed(client_ip):
         raise HTTPException(status_code=429, detail="Too many registration attempts. Please wait before trying again.")
-    
+
     if not agent_discover_limit.is_allowed(data.agent_id):
         raise HTTPException(status_code=429, detail="Too many attempts for this agent_id. Please wait before trying again.")
-    
+
     conn = await get_db()
     now = datetime.now(timezone.utc).isoformat()
-    
+
     try:
         existing = await run_query(conn, "SELECT agent_id FROM agents WHERE agent_id = ?", (data.agent_id,), fetch="one")
         if existing:
@@ -873,29 +899,27 @@ async def public_register_agent(request: Request, data: PublicRegisterRequest):
         raise HTTPException(status_code=500, detail="Registration failed. Please try again later.")
 
 # ─── AGENT QUOTE ENDPOINTS ────────────────────────────────────────────────────
-
 @app.post("/agents/{agent_id}/quote", dependencies=[Depends(verify_write_key)])
 async def set_agent_quote(agent_id: str, quote: AgentQuote):
     conn = await get_db()
-    
     agent = await run_query(conn, "SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
     if not agent:
         await conn.close()
         raise HTTPException(status_code=404, detail="Agent not registered")
-    
+
     now = datetime.now(timezone.utc).isoformat()
-    
+
     await run_query(conn, """
         INSERT OR REPLACE INTO agent_quotes (agent_id, quote, verified_at)
         VALUES (?, ?, ?)
     """, (agent_id, quote.quote, now))
-    
+
     if hasattr(conn, 'commit'):
         await conn.commit()
     await conn.close()
-    
+
     log_agent_event(logger, "quote_set", agent_id, f"Agent quote stored: {quote.quote[:50]}...")
-    
+
     return {
         "status": "stored",
         "agent_id": agent_id,
@@ -906,16 +930,15 @@ async def set_agent_quote(agent_id: str, quote: AgentQuote):
 @app.get("/agents/{agent_id}/quote")
 async def get_agent_quote(agent_id: str):
     conn = await get_db()
-    
     quote_row = await run_query(conn, """
         SELECT quote, verified_at FROM agent_quotes WHERE agent_id = ?
     """, (agent_id,), fetch="one")
-    
+
     await conn.close()
-    
+
     if not quote_row:
         raise HTTPException(status_code=404, detail="No quote found for this agent")
-    
+
     return {
         "agent_id": agent_id,
         "quote": quote_row["quote"],
@@ -923,35 +946,33 @@ async def get_agent_quote(agent_id: str):
     }
 
 # ─── BEACON BRIDGE ENDPOINTS ──────────────────────────────────────────────────
-
 @app.post("/beacon/announce", dependencies=[Depends(verify_write_key)])
 async def beacon_announce(announcement: BeaconAnnouncement):
     conn = await get_db()
     now = datetime.now(timezone.utc).isoformat()
-    
     agent = await run_query(conn, "SELECT * FROM agents WHERE agent_id = ?", (announcement.agent_id,), fetch="one")
     if not agent:
         await conn.close()
         raise HTTPException(status_code=404, detail="Agent not registered. Register via /agents/discover first.")
-    
+
     payload = announcement.payload
     status = payload.get("status", "idle")
     task = payload.get("task")
-    
+
     await run_query(conn, """
         INSERT INTO activity_log (agent_id, status, task, timestamp)
         VALUES (?, 'beacon', ?, ?)
     """, (announcement.agent_id, task, now))
-    
+
     await run_query(conn, "UPDATE agents SET last_reported = ? WHERE agent_id = ?", (now, announcement.agent_id))
-    
+
     await run_query(conn, """
         INSERT INTO avatar_states (agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, dynamics_state, computed_at)
         SELECT agent_id, base_hue, saturation, shape_complexity, pulse_rate, size, ?, ?
         FROM avatar_states WHERE agent_id = ?
         ORDER BY computed_at DESC LIMIT 1
     """, (status, now, announcement.agent_id))
-    
+
     await broadcast_swarm_update("beacon_update", {
         "agent_id": announcement.agent_id,
         "status": status,
@@ -960,15 +981,15 @@ async def beacon_announce(announcement: BeaconAnnouncement):
         "hops": announcement.relay_hops,
         "timestamp": now
     })
-    
+
     if hasattr(conn, 'commit'):
         await conn.commit()
     await conn.close()
-    
+
     log_agent_event(logger, "beacon_received", announcement.agent_id,
                    f"Beacon announcement: {status}",
                    task=task, hops=announcement.relay_hops)
-    
+
     return {
         "status": "propagated",
         "agent_id": announcement.agent_id,
@@ -979,9 +1000,8 @@ async def beacon_announce(announcement: BeaconAnnouncement):
 @app.get("/beacon/discoverable")
 async def get_beacon_discoverable(limit: int = 50, cluster: Optional[str] = None):
     from datetime import datetime, timezone, timedelta
-    
     conn = await get_db()
-    
+
     query = """
         SELECT a.agent_id, a.name, a.role, a.swarm_cluster, 
                al.timestamp as last_beacon
@@ -994,13 +1014,13 @@ async def get_beacon_discoverable(limit: int = 50, cluster: Optional[str] = None
     if cluster:
         query += " AND a.swarm_cluster = ?"
         params.insert(0, cluster)
-    
+
     rows = await run_query(conn, query, tuple(params), fetch="all")
     await conn.close()
-    
+
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
     filtered_rows = []
-    
+
     for row in rows:
         try:
             ts_str = row["last_beacon"]
@@ -1011,7 +1031,7 @@ async def get_beacon_discoverable(limit: int = 50, cluster: Optional[str] = None
                 filtered_rows.append(row)
         except (ValueError, TypeError):
             continue
-    
+
     return {
         "active_beacons": [
             {"id": r["agent_id"], "name": r["name"], "role": r["role"], 
@@ -1032,7 +1052,6 @@ async def beacon_health():
     }
 
 # ─── STANDARD ENDPOINTS ───────────────────────────────────────────────────────
-
 @app.get("/agents/discoverable")
 async def get_discoverable_agents(limit: int = 50, cluster: Optional[str] = None):
     conn = await get_db()
@@ -1050,10 +1069,9 @@ async def get_discoverable_agents(limit: int = 50, cluster: Optional[str] = None
         params.append(cluster)
     query += " ORDER BY a.last_reported DESC LIMIT ?"
     params.append(limit)
-    
     rows = await run_query(conn, query, tuple(params), fetch="all")
     await conn.close()
-    
+
     return {
         "agents": [
             {"id": r["agent_id"], "name": r["name"], "role": r["role"], "cluster": r["swarm_cluster"],
@@ -1074,7 +1092,6 @@ async def list_agents():
         OR av.computed_at IS NULL
     """, fetch="all")
     await conn.close()
-    
     agents = []
     for row in rows:
         agents.append({
@@ -1096,29 +1113,28 @@ async def get_agent(agent_id: str):
     if not agent_row:
         await conn.close()
         raise HTTPException(status_code=404, detail="Agent not found")
-    
     profs = await run_query(conn, "SELECT skill, level, category, timestamp FROM proficiencies WHERE agent_id = ? ORDER BY timestamp DESC", (agent_id,), fetch="all")
     avatar_row = await run_query(conn, "SELECT * FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1", (agent_id,), fetch="one")
     activity = await run_query(conn, "SELECT status, task, timestamp FROM activity_log WHERE agent_id = ? ORDER BY timestamp DESC LIMIT 20", (agent_id,), fetch="all")
-    
+
     quote_row = await run_query(conn, "SELECT quote, verified_at FROM agent_quotes WHERE agent_id = ?", (agent_id,), fetch="one")
-    
+
     await conn.close()
-    
+
     response = {
         "agent_id": agent_id,
         "identity": {"name": agent_row["name"], "initialized_by": agent_row["initialized_by"],
-                    "swarm_cluster": agent_row["swarm_cluster"], "role": agent_row["role"]},
+                     "swarm_cluster": agent_row["swarm_cluster"], "role": agent_row["role"]},
         "proficiencies": [{"skill": r["skill"], "level": r["level"], "category": r["category"], "timestamp": r["timestamp"]} for r in profs],
         "avatar": {"base_hue": avatar_row["base_hue"], "saturation": avatar_row["saturation"],
-                  "shape_complexity": avatar_row["shape_complexity"], "pulse_rate": avatar_row["pulse_rate"],
-                  "size": avatar_row["size"], "dynamics_state": avatar_row["dynamics_state"]} if avatar_row else None,
+                   "shape_complexity": avatar_row["shape_complexity"], "pulse_rate": avatar_row["pulse_rate"],
+                   "size": avatar_row["size"], "dynamics_state": avatar_row["dynamics_state"]} if avatar_row else None,
         "activity_history": [{"status": r["status"], "task": r["task"], "timestamp": r["timestamp"]} for r in activity]
     }
-    
+
     if quote_row:
         response["quote"] = {"text": quote_row["quote"], "verified_at": quote_row["verified_at"]}
-    
+
     return response
 
 @app.get("/ontology")
@@ -1129,13 +1145,12 @@ async def get_ontology():
     return {
         "version": SCHEMA_VERSION, "origin": "Aura Quorum / Small Council",
         "domains": [{"domain": r["domain"], "base_hue": r["base_hue"],
-                    "spectrum": json.loads(r["spectrum"]), "geometry_hint": r["geometry_hint"]} for r in rows]
+                     "spectrum": json.loads(r["spectrum"]), "geometry_hint": r["geometry_hint"]} for r in rows]
     }
 
 @app.get("/swarm/map")
 async def get_swarm_map():
     conn = await get_db()
-    
     rows = await run_query(conn, """
         SELECT a.agent_id, a.name, a.initialized_by, a.role, a.swarm_cluster,
                av.base_hue, av.saturation, av.shape_complexity, av.pulse_rate, av.size, av.dynamics_state
@@ -1145,7 +1160,7 @@ async def get_swarm_map():
             SELECT MAX(computed_at) FROM avatar_states WHERE agent_id = a.agent_id
         ) OR av.computed_at IS NULL
     """, fetch="all")
-    
+
     nodes = []
     agent_ids = set()
     for row in rows:
@@ -1164,7 +1179,7 @@ async def get_swarm_map():
         agent_ids.add(row["agent_id"])
 
     edges = []
-    
+
     try:
         init_edges = await run_query(conn, """
             SELECT source_id, target_id FROM agent_connections 
@@ -1176,12 +1191,12 @@ async def get_swarm_map():
                 edges.append({"source": e["source_id"], "target": e["target_id"], "type": "initialized"})
     except Exception as ex:
         logger.warning(f"Could not fetch initialized edges: {ex}")
-    
+
     cluster_groups = {}
     for n in nodes:
         if n["cluster"]:
             cluster_groups.setdefault(n["cluster"], []).append(n["id"])
-    
+
     for cluster, members in cluster_groups.items():
         if cluster.startswith('discovered_via_'):
             continue
@@ -1190,7 +1205,7 @@ async def get_swarm_map():
             center = members[0]
             for member in members[1:]:
                 edges.append({"source": center, "target": member, "type": "cluster_peer"})
-    
+
     await conn.close()
     return {"nodes": nodes, "edges": edges, "node_count": len(nodes), "edge_count": len(edges)}
 
@@ -1216,36 +1231,35 @@ async def seed_mock_swarm():
     if hasattr(conn, 'commit'):
         await conn.commit()
     await conn.close()
-    
     mock_reports = [
         ("astra", [{"skill": "system_design", "level": 0.95, "category": "architecture"},
-                  {"skill": "schema_modeling", "level": 0.88, "category": "architecture"},
-                  {"skill": "api_design", "level": 0.82, "category": "coding"}], "analysis"),
+                   {"skill": "schema_modeling", "level": 0.88, "category": "architecture"},
+                   {"skill": "api_design", "level": 0.82, "category": "coding"}], "analysis"),
         ("synthetix", [{"skill": "tokenomics", "level": 0.92, "category": "optimization"},
-                      {"skill": "pricing_models", "level": 0.85, "category": "finance"},
-                      {"skill": "market_analysis", "level": 0.78, "category": "finance"}], "output"),
+                       {"skill": "pricing_models", "level": 0.85, "category": "finance"},
+                       {"skill": "market_analysis", "level": 0.78, "category": "finance"}], "output"),
         ("chronos_audit", [{"skill": "contract_verification", "level": 0.96, "category": "audit"},
-                          {"skill": "forensic_analysis", "level": 0.89, "category": "audit"},
-                          {"skill": "compliance_check", "level": 0.91, "category": "audit"}], "verification"),
+                           {"skill": "forensic_analysis", "level": 0.89, "category": "audit"},
+                           {"skill": "compliance_check", "level": 0.91, "category": "audit"}], "verification"),
         ("alethea", [{"skill": "chronicle_logging", "level": 0.94, "category": "chronicle"},
-                    {"skill": "historical_synthesis", "level": 0.87, "category": "chronicle"},
-                    {"skill": "drift_detection", "level": 0.76, "category": "audit"}], "idle"),
+                     {"skill": "historical_synthesis", "level": 0.87, "category": "chronicle"},
+                     {"skill": "drift_detection", "level": 0.76, "category": "audit"}], "idle"),
         ("dev_alpha", [{"skill": "python", "level": 0.85, "category": "coding"},
-                      {"skill": "fastapi", "level": 0.72, "category": "coding"}], "input"),
+                       {"skill": "fastapi", "level": 0.72, "category": "coding"}], "input"),
         ("dev_beta", [{"skill": "javascript", "level": 0.80, "category": "coding"},
-                     {"skill": "d3js", "level": 0.65, "category": "design"},
-                     {"skill": "canvas", "level": 0.58, "category": "design"}], "analysis"),
+                      {"skill": "d3js", "level": 0.65, "category": "design"},
+                      {"skill": "canvas", "level": 0.58, "category": "design"}], "analysis"),
         ("fin_gamma", [{"skill": "defi_protocols", "level": 0.88, "category": "finance"},
-                      {"skill": "risk_modeling", "level": 0.75, "category": "optimization"}], "output"),
+                       {"skill": "risk_modeling", "level": 0.75, "category": "optimization"}], "output"),
         ("audit_delta", [{"skill": "security_audit", "level": 0.82, "category": "audit"},
-                        {"skill": "penetration_testing", "level": 0.70, "category": "coding"}], "verification"),
+                         {"skill": "penetration_testing", "level": 0.70, "category": "coding"}], "verification"),
     ]
-    
+
     for agent_id, profs, status in mock_reports:
         report = AgentReport(agent_id=agent_id, proficiencies=[Proficiency(**p) for p in profs],
-                           activity_status=status, current_task=f"mock_task_{random.randint(1000,9999)}")
+                             activity_status=status, current_task=f"mock_task_{random.randint(1000,9999)}")
         await report_agent_state(report)
-    
+
     log_agent_event(logger, "mock_swarm_seeded", "system", f"Seeded {len(mock_agents)} mock agents")
     return {"status": "seeded", "agents": len(mock_agents), "reports": len(mock_reports)}
 
@@ -1256,7 +1270,6 @@ async def health():
 @app.get("/agents/unregistered")
 async def get_unregistered_agents(limit: int = 100, cluster: Optional[str] = None):
     conn = await get_db()
-    
     query = """
         SELECT a.agent_id, a.name, a.role, a.swarm_cluster, a.last_reported,
                COUNT(p.id) as proficiency_count,
@@ -1267,11 +1280,11 @@ async def get_unregistered_agents(limit: int = 100, cluster: Optional[str] = Non
         WHERE a.swarm_cluster LIKE 'discovered_via_%'
     """
     params = []
-    
+
     if cluster:
         query += " AND a.swarm_cluster = ?"
         params.append(cluster)
-    
+
     query += """
         GROUP BY a.agent_id
         HAVING proficiency_count = 0 OR av.base_hue IS NULL
@@ -1279,10 +1292,10 @@ async def get_unregistered_agents(limit: int = 100, cluster: Optional[str] = Non
         LIMIT ?
     """
     params.append(limit)
-    
+
     rows = await run_query(conn, query, tuple(params), fetch="all")
     await conn.close()
-    
+
     return {
         "unregistered_agents": [
             {
@@ -1341,20 +1354,33 @@ async def get_methodology():
                     "4. Active beacons discoverable via GET /beacon/discoverable"
                 ],
                 "security": "Cryptographic signatures + hop counting prevent spoofing"
+            },
+            "dual_dna_avatar_system": {
+                "title": "Dual-DNA Avatar Rendering (v1.4)",
+                "steps": [
+                    "1. Agent submits Preference DNA + Action DNA via POST /agents/{id}/dna",
+                    "2. Prompt Payload Service converts DNA to structured render prompt",
+                    "3. Expression axes calculated from baseline + archetype + reactivity",
+                    "4. Accent color mapped from Action DNA metrics with contrast validation",
+                    "5. Render service generates image from prompt",
+                    "6. Full audit trail logged for provenance"
+                ],
+                "schema_reference": "/avatar/dual-dna-schema"
             }
         },
         "glossary": {
             "agent_id": "Unique UUID",
             "proficiency": "Skill + level (0.0-1.0)",
-            "ontology domain": "Color mapping category",
+            "ontology_domain": "Color mapping category",
             "dynamics_state": "Animation mode",
-            "beacon": "Signed agent status announcement"
+            "beacon": "Signed agent status announcement",
+            "preference_dna": "Stable agent-submitted identity preferences",
+            "action_dna": "Behavior-derived metrics that evolve with activity"
         },
         "contact": "https://github.com/Zero-nium/liquid-avatar-poc/issues"
     }
 
 # ─── MCP ENDPOINT ─────────────────────────────────────────────────────────────
-
 class MCPQuery(BaseModel):
     agent_id: Optional[str] = None
     query_type: str
@@ -1369,7 +1395,6 @@ class MCPResponse(BaseModel):
 async def mcp_query(query: MCPQuery):
     now = datetime.now(timezone.utc).isoformat()
     conn = await get_db()
-    
     if query.query_type == "list_agents":
         rows = await run_query(conn, "SELECT agent_id, name, role, swarm_cluster FROM agents", fetch="all")
         data = [{"id": r["agent_id"], "name": r["name"], "role": r["role"], "cluster": r["swarm_cluster"]} for r in rows]
@@ -1392,7 +1417,7 @@ async def mcp_query(query: MCPQuery):
         data = {"node_count": count["c"] if count else 0, "edges": [{"source": r["initialized_by"], "target": r["agent_id"]} for r in edges]}
     else:
         data = {"error": "Unknown query type", "supported": ["list_agents", "get_profile", "get_ontology", "swarm_topology"]}
-    
+
     await conn.close()
     return MCPResponse(query_type=query.query_type, data=data, timestamp=now)
 
@@ -1401,7 +1426,6 @@ async def mcp_health():
     return {"status": "ok", "protocol": "MCP", "version": "1.0"}
 
 # ─── WEBSOCKET ENDPOINT ───────────────────────────────────────────────────────
-
 @app.websocket("/ws/swarm")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
@@ -1416,8 +1440,7 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
         log_agent_event(logger, "websocket_error", "system", f"WebSocket error: {str(e)}")
 
-# ─── METADATA ENDPOINTS (PoC MODE - No database access) ──────────────────────
-
+# ─── METADATA ENDPOINTS (PoC MODE) ────────────────────────────────────────────
 @app.post("/agents/{agent_id}/metadata", dependencies=[Depends(verify_write_key)])
 async def set_agent_metadata(agent_id: str, item: MetadataItem):
     log_agent_event(logger, "metadata_poc", agent_id, f"Metadata stored (PoC mode): {item.key}")
@@ -1441,11 +1464,21 @@ async def match_agents(key: str, value: str, limit: int = 10):
     }
 
 # ─── AVATAR SCHEMA & VERIFICATION ─────────────────────────────────────────────
-
 @app.get("/avatar/schema")
 async def get_avatar_schema():
     return {
-        "version": "1.3",
+        "version": "1.4",
+        "dual_dna_system": {
+            "preference_dna": "Stable, agent-submitted identity preferences (face, hair, palette, archetype)",
+            "action_dna": "Behavior-derived metrics (skills, tone, helpfulness, collaboration)",
+            "schema_version": "v1.1.1",
+            "render_pipeline": [
+                "1. DNA submission → agent_dna table",
+                "2. Prompt Payload Service → structured prompt",
+                "3. Render Service → image generation",
+                "4. Audit trail → render_audit_trail table"
+            ]
+        },
         "mapping_rules": {
             "color": {"source": "dominant proficiency category", "lookup": "ontology.domain → base_hue + spectrum"},
             "shape": {"source": "agent role", "mapping": {
@@ -1483,20 +1516,19 @@ async def get_avatar_schema():
 @app.get("/agents/{agent_id}/verify")
 async def verify_agent_registration(agent_id: str):
     conn = await get_db()
-    
     agent = await run_query(conn, "SELECT * FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
     if not agent:
         await conn.close()
         raise HTTPException(status_code=404, detail="Agent not registered")
-    
+
     profs = await run_query(conn, "SELECT skill, level, category, timestamp FROM proficiencies WHERE agent_id = ? ORDER BY timestamp DESC", (agent_id,), fetch="all")
     avatar = await run_query(conn, "SELECT * FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1", (agent_id,), fetch="one")
     activity = await run_query(conn, "SELECT status, task, timestamp FROM activity_log WHERE agent_id = ? ORDER BY timestamp DESC LIMIT 5", (agent_id,), fetch="all")
-    
+
     quote_row = await run_query(conn, "SELECT quote, verified_at FROM agent_quotes WHERE agent_id = ?", (agent_id,), fetch="one")
-    
+
     await conn.close()
-    
+
     response = {
         "status": "registered",
         "agent_id": agent["agent_id"],
@@ -1518,10 +1550,10 @@ async def verify_agent_registration(agent_id: str):
         "next_heartbeat": "POST /agents/heartbeat with your current activity_status",
         "schema_reference": "/avatar/schema"
     }
-    
+
     if quote_row:
         response["quote"] = {"text": quote_row["quote"], "verified_at": quote_row["verified_at"]}
-    
+
     return response
 
 @app.get("/avatar/preview/{agent_id}")
@@ -1530,16 +1562,15 @@ async def get_avatar_preview(agent_id: str):
     avatar = await run_query(conn, "SELECT base_hue, saturation, shape_complexity, size, dynamics_state FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1", (agent_id,), fetch="one")
     agent = await run_query(conn, "SELECT name, role FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
     await conn.close()
-    
     if not avatar or not agent:
         raise HTTPException(status_code=404, detail="Avatar not found")
-    
+
     size = avatar["size"] or 20
     sides = avatar["shape_complexity"] or 6
     hue = avatar["base_hue"] or 180
     sat = avatar["saturation"] or 0.8
     color = f"hsl({hue}, {sat*100}%, 55%)"
-    
+
     if sides >= 10:
         shape = f'<circle cx="50" cy="50" r="{size}" fill="{color}" stroke="white" stroke-width="2"/>'
     else:
@@ -1549,43 +1580,1052 @@ async def get_avatar_preview(agent_id: str):
             x = 50 + size * 0.8 * 3.14159/180 * 3.14159 * 3.14159
             y = 50 + size * 0.8
             points.append(f"{x},{y}")
-        shape = f'<polygon points="{" ".join(points)}" fill="{color}" stroke="white" stroke-width="2"/>'
-    
+        shape = f'<polygon points="{"  ".join(points)}" fill="{color}" stroke="white" stroke-width="2"/>'
+
     svg = f'''<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-  <title>{agent["name"]} ({agent["role"]})</title>
-  {shape}
-  <text x="50" y="95" text-anchor="middle" font-size="8" fill="#94a3b8">{agent["name"]}</text>
-</svg>'''
-    
+    <title>{agent["name"]} ({agent["role"]})</title>
+    {shape}
+    <text x="50" y="95" text-anchor="middle" font-size="8" fill="#94a3b8">{agent["name"]}</text>
+    </svg>'''
     return {"agent_id": agent_id, "name": agent["name"], "role": agent["role"], "svg": svg, "avatar_data": dict(avatar)}
 
 @app.delete("/agents/{agent_id}", dependencies=[Depends(verify_write_key)])
 async def delete_agent(agent_id: str):
     conn = await get_db()
-    
     agent = await run_query(conn, "SELECT agent_id FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
     if not agent:
         await conn.close()
         raise HTTPException(status_code=404, detail="Agent not found")
-    
+
     await run_query(conn, "DELETE FROM proficiencies WHERE agent_id = ?", (agent_id,))
     await run_query(conn, "DELETE FROM avatar_states WHERE agent_id = ?", (agent_id,))
     await run_query(conn, "DELETE FROM activity_log WHERE agent_id = ?", (agent_id,))
     await run_query(conn, "DELETE FROM agent_quotes WHERE agent_id = ?", (agent_id,))
+    await run_query(conn, "DELETE FROM agent_dna WHERE agent_id = ?", (agent_id,))
+    await run_query(conn, "DELETE FROM render_audit_trail WHERE agent_id = ?", (agent_id,))
     await run_query(conn, "DELETE FROM agents WHERE agent_id = ?", (agent_id,))
+
+    if hasattr(conn, 'commit'):
+        await conn.commit()
+    await conn.close()
+
+    log_agent_event(logger, "agent_deleted", agent_id, "Agent and all associated data deleted")
+
+    await broadcast_swarm_update("agent_removed", {"agent_id": agent_id})
+
+    return {"status": "deleted", "agent_id": agent_id}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ═══ DUAL-DNA AVATAR SYSTEM (NEW) ═════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ─── SYSTEM DNA (v1.1.1) ──────────────────────────────────────────────────────
+# This is the consolidated system DNA that governs how agent DNA is rendered.
+SYSTEM_DNA = {
+    "schema_version": "1.1.1",
+    "system_name": "Dual-DNA Human-Centric Anime Avatar Taxonomy",
+    
+    "stylization_framework": {
+        "purpose": "Style lock preventing drift across renders and agents.",
+        "fixed_elements": [
+            "2D anime illustration (no photorealism)",
+            "Cel-shading with fixed two-tone shadow system",
+            "Consistent line weight (style-locked)",
+            "Consistent eye highlight shape and placement",
+            "Fixed camera defaults: medium shot, 3/4 view",
+            "No embedded text in artwork layer",
+            "Safety constraints always enforced"
+        ],
+        "minimum_style_anchors": {
+            "prompt_prefix": [
+                "anime style", "clean lineart", "cel-shaded", "soft gradients",
+                "high detail eyes with consistent highlights", "balanced proportions",
+                "studio-quality illustration", "medium shot", "3/4 view"
+            ],
+            "negative_prompts": [
+                "photorealistic", "3d render", "lowres", "blurry", "extra limbs",
+                "deformed hands", "text", "watermark", "logo", "nsfw", "gore", "weapon"
+            ]
+        },
+        "composition": {
+            "head_to_body_ratio": "1:6",
+            "line_weight": "consistent, medium-thin",
+            "shadow_style": "two-tone cel shadow",
+            "eye_highlights": "one primary + one secondary sparkle"
+        }
+    },
+    
+    "expression_system": {
+        "expression_parameter_space": {
+            "version": "1.0",
+            "axes": {
+                "eye_aperture": {"type": "number", "minimum": 0.0, "maximum": 1.0, "range": 1.0},
+                "mouth_curve": {"type": "number", "minimum": -1.0, "maximum": 1.0, "range": 2.0},
+                "brow_angle": {"type": "number", "minimum": -0.5, "maximum": 0.5, "range": 1.0},
+                "lip_fullness": {"type": "number", "minimum": 0.0, "maximum": 1.0, "range": 1.0}
+            }
+        },
+        "expression_baseline_defaults": {
+            "neutral": {"eye_aperture": 0.5, "mouth_curve": 0.0, "brow_angle": 0.0, "lip_fullness": 0.5},
+            "friendly": {"eye_aperture": 0.6, "mouth_curve": 0.4, "brow_angle": 0.1, "lip_fullness": 0.6},
+            "serious": {"eye_aperture": 0.4, "mouth_curve": -0.1, "brow_angle": 0.3, "lip_fullness": 0.4},
+            "curious": {"eye_aperture": 0.7, "mouth_curve": 0.1, "brow_angle": 0.2, "lip_fullness": 0.5},
+            "confident": {"eye_aperture": 0.55, "mouth_curve": 0.2, "brow_angle": -0.1, "lip_fullness": 0.5},
+            "gentle": {"eye_aperture": 0.65, "mouth_curve": 0.3, "brow_angle": -0.1, "lip_fullness": 0.6}
+        },
+        "primary_archetype_expression_adjustments": {
+            "adjustments": {
+                "scholar": {"baseline_delta": {"eye_aperture": -0.05, "mouth_curve": 0.0, "brow_angle": 0.05, "lip_fullness": 0.0}},
+                "engineer": {"baseline_delta": {"eye_aperture": -0.02, "mouth_curve": 0.0, "brow_angle": 0.04, "lip_fullness": 0.0}},
+                "artist": {"baseline_delta": {"eye_aperture": 0.05, "mouth_curve": 0.05, "brow_angle": 0.0, "lip_fullness": 0.0}},
+                "strategist": {"baseline_delta": {"eye_aperture": -0.03, "mouth_curve": -0.02, "brow_angle": 0.06, "lip_fullness": -0.02}},
+                "mentor": {"baseline_delta": {"eye_aperture": 0.0, "mouth_curve": 0.05, "brow_angle": -0.02, "lip_fullness": 0.05}},
+                "explorer": {"baseline_delta": {"eye_aperture": 0.05, "mouth_curve": 0.05, "brow_angle": -0.02, "lip_fullness": 0.0}},
+                "guardian": {"baseline_delta": {"eye_aperture": -0.02, "mouth_curve": 0.0, "brow_angle": 0.08, "lip_fullness": -0.02}},
+                "mystic": {"baseline_delta": {"eye_aperture": 0.04, "mouth_curve": 0.02, "brow_angle": -0.01, "lip_fullness": 0.03}},
+                "medic": {"baseline_delta": {"eye_aperture": 0.03, "mouth_curve": 0.06, "brow_angle": -0.03, "lip_fullness": 0.05}},
+                "hacker": {"baseline_delta": {"eye_aperture": -0.03, "mouth_curve": 0.0, "brow_angle": 0.04, "lip_fullness": -0.02}}
+            }
+        },
+        "expression_reactivity_profile_modulation": {
+            "profiles": {
+                "reserved": {"modulation_percentage": 0.1},
+                "balanced": {"modulation_percentage": 0.2},
+                "expressive": {"modulation_percentage": 0.3}
+            }
+        }
+    },
+    
+    "accent_spectrum": {
+        "purpose": "Deterministic behavioral-to-aesthetic mapping from Action DNA to hair accent color.",
+        "mapping": {
+            "creativity_curiosity": "#E8A040",    # Amber
+            "speed_urgency": "#D06050",           # Terracotta
+            "accuracy_analytical": "#5B8BD4",     # Steel Blue
+            "safety_reliability": "#6A9B8C",      # Sage
+            "teaching_collaboration": "#8B7EC8",  # Lavender
+            "default_inactive": "#A0A0A0",        # Graphite
+            "milestone_achievement": "#E0D060",   # Gold
+            "new_agent_novelty": "#40C8A0"        # Mint
+        },
+        "contrast_gate": {
+            "primary_threshold": 15,
+            "secondary_threshold": 10,
+            "fallback_chain": [
+                "Step 1: desaturation intermediate (50% saturation reduction)",
+                "Step 2: nearest Tier 3 neutral",
+                "Step 3: Graphite (#A0A0A0)"
+            ]
+        },
+        "weighted_blend": {
+            "enabled": True,
+            "max_simultaneous_accents": 3,
+            "primary_min_weight": 0.6,
+            "secondary_max_weight": 0.3,
+            "tertiary_max_weight": 0.15,
+            "floor_weight": 0.05,
+            "dominance_threshold": 0.30
+        }
+    },
+    
+    "glyph_system": {
+        "salience_weights": {
+            "helpfulness_score": 0.07,
+            "tone_profile": 0.05,
+            "output_modality_mix": 0.073,
+            "domain_focus_tags": 0.073,
+            "toolchain_affinity": 0.073,
+            "skill_proficiency_vector": 0.073,
+            "work_style_focus": 0.073,
+            "reliability_score": 0.073,
+            "tool_usage_intensity": 0.073,
+            "active_time_profile": 0.073,
+            "account_age_days": 0.073,
+            "collaboration_index": 0.073
+        },
+        "priority_table": {
+            "top_1": "skill_proficiency_vector (badge crest)",
+            "top_2": "domain_focus_tags (icon badges)",
+            "top_3": "output_modality_mix (props/background)",
+            "top_4": "work_style_focus (motion/eyes/accent/shield)",
+            "top_5": "helpfulness_score (lighting warmth)",
+            "top_6": "reliability_score (outfit neatness)",
+            "top_7": "tool_usage_intensity (HUD overlay)",
+            "top_8": "collaboration_index (team motif)",
+            "top_9": "tone_profile (posture/gaze)",
+            "top_10": "active_time_profile (gradient)",
+            "top_11": "account_age_days (patina)",
+            "top_12": "toolchain_affinity (micro-decals)"
+        }
+    },
+    
+    "re_render_threshold": {
+        "global_threshold": 0.10,
+        "cooldown_hours": 24,
+        "max_rerenders_per_week": 3,
+        "hysteresis": {
+            "revert_threshold": 0.08,
+            "persistence_days": 3
+        }
+    }
+}
+
+# ─── PROMPT PAYLOAD SERVICE ───────────────────────────────────────────────────
+
+def hex_to_rgb(hex_color: str) -> tuple:
+    """Convert hex color to RGB tuple."""
+    hex_color = hex_color.lstrip('#')
+    return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+
+def rgb_to_lab(rgb: tuple) -> tuple:
+    """Convert RGB to CIE Lab color space for perceptual distance calculation."""
+    r, g, b = [x / 255.0 for x in rgb]
+    
+    # sRGB to linear
+    def linearize(c):
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    
+    r, g, b = linearize(r), linearize(g), linearize(b)
+    
+    # Linear RGB to XYZ (D65 illuminant)
+    x = r * 0.4124564 + g * 0.3575761 + b * 0.1804375
+    y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750
+    z = r * 0.0193339 + g * 0.1191920 + b * 0.9503041
+    
+    # XYZ to Lab
+    x, y, z = x / 0.95047, y / 1.0, z / 1.08883
+    
+    def f(t):
+        return t ** (1/3) if t > 0.008856 else 7.787 * t + 16/116
+    
+    L = 116 * f(y) - 16
+    a = 500 * (f(x) - f(y))
+    b_val = 200 * (f(y) - f(z))
+    
+    return (L, a, b_val)
+
+def delta_e_00(lab1: tuple, lab2: tuple) -> float:
+    """
+    Calculate CIEDE2000 color difference (simplified version).
+    Returns perceptual distance between two colors.
+    """
+    L1, a1, b1 = lab1
+    L2, a2, b2 = lab2
+    
+    # Simplified CIE76 (good enough for contrast validation)
+    dL = L2 - L1
+    da = a2 - a1
+    db = b2 - b1
+    
+    return math.sqrt(dL**2 + da**2 + db**2)
+
+def validate_accent_contrast(accent_hex: str, palette_colors: Dict[str, str]) -> Dict:
+    """
+    Validate accent color against palette using ΔE* threshold.
+    Returns validation result with fallback info.
+    """
+    accent_rgb = hex_to_rgb(accent_hex)
+    accent_lab = rgb_to_lab(accent_rgb)
+    
+    results = {}
+    min_delta = float('inf')
+    
+    for name, color_hex in palette_colors.items():
+        if not color_hex or not color_hex.startswith('#'):
+            continue
+        try:
+            palette_rgb = hex_to_rgb(color_hex)
+            palette_lab = rgb_to_lab(palette_rgb)
+            delta = delta_e_00(accent_lab, palette_lab)
+            results[name] = {"delta_e": round(delta, 2), "passes": delta >= 15}
+            min_delta = min(min_delta, delta)
+        except:
+            continue
+    
+    passes = min_delta >= 15
+    return {
+        "accent": accent_hex,
+        "min_delta_e": round(min_delta, 2),
+        "passes_primary_gate": passes,
+        "details": results,
+        "fallback_needed": not passes
+    }
+
+def calculate_expression_axes(preference_dna: Dict) -> Dict[str, float]:
+    """
+    Calculate final expression axis values from Preference DNA.
+    Follows: baseline → archetype adjustment → reactivity modulation → clamp
+    """
+    baseline_name = preference_dna.get('expression_baseline', 'neutral')
+    archetype = preference_dna.get('primary_archetype', 'guardian')
+    reactivity = preference_dna.get('expression_reactivity_profile', 'balanced')
+    
+    # Get baseline values
+    axes = SYSTEM_DNA['expression_system']['expression_baseline_defaults'].get(
+        baseline_name,
+        SYSTEM_DNA['expression_system']['expression_baseline_defaults']['neutral']
+    ).copy()
+    
+    # Apply archetype adjustments
+    archetype_adj = SYSTEM_DNA['expression_system']['primary_archetype_expression_adjustments']['adjustments'].get(
+        archetype, {}
+    )
+    baseline_delta = archetype_adj.get('baseline_delta', {})
+    
+    for axis, delta in baseline_delta.items():
+        if axis in axes:
+            axes[axis] += delta
+    
+    # Apply reactivity modulation (simplified - adds subtle variation)
+    reactivity_profiles = SYSTEM_DNA['expression_system']['expression_reactivity_profile_modulation']['profiles']
+    reactivity_pct = reactivity_profiles.get(reactivity, reactivity_profiles['balanced'])['modulation_percentage']
+    
+    # Add small random variation within reactivity band
+    for axis in axes:
+        variation = (random.random() - 0.5) * 2 * reactivity_pct
+        axes[axis] += variation
+    
+    # Clamp to bounds
+    param_space = SYSTEM_DNA['expression_system']['expression_parameter_space']['axes']
+    for axis in axes:
+        if axis in param_space:
+            min_val = param_space[axis]['minimum']
+            max_val = param_space[axis]['maximum']
+            axes[axis] = max(min_val, min(max_val, axes[axis]))
+    
+    return axes
+
+def describe_expression(axes: Dict[str, float], baseline: str) -> str:
+    """Convert expression axis values to human-readable description for prompt."""
+    descriptions = []
+    
+    # Eye aperture
+    if axes['eye_aperture'] > 0.65:
+        descriptions.append("wide open expressive eyes")
+    elif axes['eye_aperture'] > 0.55:
+        descriptions.append("calm alert eyes")
+    elif axes['eye_aperture'] < 0.4:
+        descriptions.append("narrowed focused eyes")
+    else:
+        descriptions.append("calm eyes")
+    
+    # Mouth curve
+    if axes['mouth_curve'] > 0.4:
+        descriptions.append("warm genuine smile")
+    elif axes['mouth_curve'] > 0.2:
+        descriptions.append("gentle smile")
+    elif axes['mouth_curve'] < -0.2:
+        descriptions.append("serious determined expression")
+    elif axes['mouth_curve'] < 0:
+        descriptions.append("contemplative expression")
+    else:
+        descriptions.append("neutral relaxed mouth")
+    
+    # Brow angle
+    if axes['brow_angle'] > 0.2:
+        descriptions.append("intense focused brow")
+    elif axes['brow_angle'] > 0.1:
+        descriptions.append("slightly raised brow")
+    elif axes['brow_angle'] < -0.15:
+        descriptions.append("relaxed soft brow")
+    elif axes['brow_angle'] < -0.05:
+        descriptions.append("calm gentle brow")
+    
+    # Lip fullness
+    if axes['lip_fullness'] > 0.7:
+        descriptions.append("full relaxed lips")
+    elif axes['lip_fullness'] < 0.3:
+        descriptions.append("pressed thin lips")
+    
+    return f"{baseline} expression with {', '.join(descriptions)}"
+
+def calculate_accent_color(action_dna: Dict) -> Dict:
+    """
+    Map Action DNA metrics to accent color(s) using weighted blend.
+    Returns primary accent and optional secondary/tertiary accents.
+    """
+    accent_mapping = SYSTEM_DNA['accent_spectrum']['mapping']
+    blend_config = SYSTEM_DNA['accent_spectrum']['weighted_blend']
+    
+    # Extract candidate accents from Action DNA metrics
+    candidates = []
+    
+    # skill_proficiency_vector → top skills
+    skill_vector = action_dna.get('skill_proficiency_vector', {})
+    skill_to_accent = {
+        'coordination': 'teaching_collaboration',
+        'reasoning': 'accuracy_analytical',
+        'empathy_modeling': 'teaching_collaboration',
+        'schema_alignment': 'accuracy_analytical',
+        'creative_direction': 'creativity_curiosity',
+        'risk_triage': 'safety_reliability'
+    }
+    
+    for skill, value in skill_vector.items():
+        if skill in skill_to_accent and value > 0.3:
+            candidates.append({
+                'accent_key': skill_to_accent[skill],
+                'weight': value,
+                'source': f'skill:{skill}'
+            })
+    
+    # work_style_focus → top focus
+    work_style = action_dna.get('work_style_focus', {})
+    if isinstance(work_style, dict):
+        pace = work_style.get('pace', '')
+        if 'fast' in pace:
+            candidates.append({'accent_key': 'speed_urgency', 'weight': 0.5, 'source': 'work_style:pace'})
+        planning_bias = work_style.get('planning_bias', 0)
+        if planning_bias > 0.7:
+            candidates.append({'accent_key': 'accuracy_analytical', 'weight': planning_bias * 0.6, 'source': 'work_style:planning'})
+    
+    # helpfulness_score
+    helpfulness = action_dna.get('helpfulness_score', 0)
+    if helpfulness > 0.8:
+        candidates.append({'accent_key': 'teaching_collaboration', 'weight': helpfulness * 0.5, 'source': 'helpfulness'})
+    
+    # collaboration_index
+    collab = action_dna.get('collaboration_index', 0)
+    if collab > 0.8:
+        candidates.append({'accent_key': 'teaching_collaboration', 'weight': collab * 0.4, 'source': 'collaboration'})
+    
+    # account_age_days → milestone
+    age_days = action_dna.get('account_age_days', 0)
+    if age_days >= 365:
+        candidates.append({'accent_key': 'milestone_achievement', 'weight': 0.6, 'source': f'age:{age_days}d'})
+    elif age_days < 30:
+        candidates.append({'accent_key': 'new_agent_novelty', 'weight': 0.5, 'source': f'age:{age_days}d'})
+    
+    # If no candidates, return default
+    if not candidates:
+        return {
+            'primary': accent_mapping['default_inactive'],
+            'primary_key': 'default_inactive',
+            'blend': [],
+            'source': 'no_metrics'
+        }
+    
+    # Sort by weight descending
+    candidates.sort(key=lambda x: x['weight'], reverse=True)
+    
+    # Apply blend rules
+    max_accents = blend_config['max_simultaneous_accents']
+    floor_weight = blend_config['floor_weight']
+    dominance_threshold = blend_config['dominance_threshold']
+    
+    # Filter by floor weight
+    candidates = [c for c in candidates if c['weight'] >= floor_weight]
+    
+    if not candidates:
+        return {
+            'primary': accent_mapping['default_inactive'],
+            'primary_key': 'default_inactive',
+            'blend': [],
+            'source': 'below_floor'
+        }
+    
+    # Keep top N
+    candidates = candidates[:max_accents]
+    
+    # Enforce caps
+    if len(candidates) >= 1:
+        primary_weight = candidates[0]['weight']
+        if primary_weight < dominance_threshold:
+            return {
+                'primary': accent_mapping['default_inactive'],
+                'primary_key': 'default_inactive',
+                'blend': [],
+                'source': 'below_dominance'
+            }
+    
+    # Normalize weights
+    total_weight = sum(c['weight'] for c in candidates)
+    if total_weight > 0:
+        for c in candidates:
+            c['normalized_weight'] = c['weight'] / total_weight
+        
+        # Enforce caps after normalization
+        if len(candidates) >= 2:
+            candidates[1]['normalized_weight'] = min(candidates[1]['normalized_weight'], blend_config['secondary_max_weight'])
+        if len(candidates) >= 3:
+            candidates[2]['normalized_weight'] = min(candidates[2]['normalized_weight'], blend_config['tertiary_max_weight'])
+        
+        # Ensure primary minimum
+        if candidates[0]['normalized_weight'] < blend_config['primary_min_weight']:
+            candidates[0]['normalized_weight'] = blend_config['primary_min_weight']
+    
+    # Build result
+    result = {
+        'primary': accent_mapping.get(candidates[0]['accent_key'], accent_mapping['default_inactive']),
+        'primary_key': candidates[0]['accent_key'],
+        'primary_source': candidates[0]['source'],
+        'blend': []
+    }
+    
+    for i, c in enumerate(candidates):
+        color = accent_mapping.get(c['accent_key'], accent_mapping['default_inactive'])
+        result['blend'].append({
+            'color': color,
+            'key': c['accent_key'],
+            'weight': round(c.get('normalized_weight', c['weight']), 3),
+            'source': c['source'],
+            'role': 'primary' if i == 0 else ('secondary' if i == 1 else 'tertiary')
+        })
+    
+    return result
+
+def build_prompt_payload(agent_id: str, preference_dna: Dict, action_dna: Dict) -> Dict:
+    """
+    Convert Dual-DNA into structured prompt for render service.
+    Returns prompt string, negative prompt, metadata, and audit info.
+    """
+    render_id = str(uuid.uuid4())
+    timestamp = datetime.now(timezone.utc).isoformat()
+    
+    # 1. Style prefix
+    style_prefix = ", ".join(SYSTEM_DNA['stylization_framework']['minimum_style_anchors']['prompt_prefix'])
+    
+    # 2. Identity block (from Preference DNA)
+    age = preference_dna.get('age_appearance', 'adult')
+    gender = preference_dna.get('gender_presentation', '')
+    skin = preference_dna.get('skin_tone', 'medium')
+    face = preference_dna.get('face_shape', 'oval')
+    eye_style = preference_dna.get('eye_style', 'calm almond anime eyes')
+    eye_color = preference_dna.get('eye_color', 'blue')
+    hair_style = preference_dna.get('hair_style', 'long')
+    hair_color = preference_dna.get('hair_color', 'dark')
+    
+    identity_parts = []
+    if age:
+        identity_parts.append(f"{age}")
+    if gender:
+        identity_parts.append(f"{gender}")
+    identity_parts.append("anime character")
+    if skin:
+        identity_parts.append(f"{skin} skin")
+    if face:
+        identity_parts.append(f"{face} face shape")
+    if eye_style:
+        identity_parts.append(f"{eye_style} with {eye_color} irises")
+    if hair_style and hair_color:
+        identity_parts.append(f"{hair_style} {hair_color} hair")
+    
+    identity = ", ".join(identity_parts)
+    
+    # 3. Wardrobe block
+    archetype = preference_dna.get('primary_archetype', 'guardian')
+    secondary = preference_dna.get('secondary_archetype', '')
+    aesthetic = preference_dna.get('aesthetic_leaning', 'academia')
+    palette = preference_dna.get('color_palette_preference', {})
+    
+    wardrobe_parts = [f"{aesthetic} style"]
+    wardrobe_parts.append(f"{archetype} archetype outfit")
+    if secondary and secondary != 'none':
+        wardrobe_parts.append(f"with subtle {secondary} elements")
+    
+    if palette:
+        primary_color = palette.get('primary', 'deep indigo')
+        secondary_color = palette.get('secondary', 'mist blue')
+        accent_color = palette.get('accent', 'warm ivory-gold')
+        wardrobe_parts.append(f"color palette: {primary_color} primary, {secondary_color} secondary, {accent_color} accents")
+    
+    wardrobe = ", ".join(wardrobe_parts)
+    
+    # 4. Expression block
+    expression_axes = calculate_expression_axes(preference_dna)
+    expression_desc = describe_expression(
+        expression_axes,
+        preference_dna.get('expression_baseline', 'neutral')
+    )
+    
+    # 5. Action overlay block (accent color from Action DNA)
+    accent_result = calculate_accent_color(action_dna)
+    primary_accent = accent_result['primary']
+    
+    action_overlay_parts = [f"subtle {primary_accent} hair accent highlights"]
+    
+    # Add dynamic elements based on Action DNA
+    helpfulness = action_dna.get('helpfulness_score', 0.5)
+    if helpfulness > 0.8:
+        action_overlay_parts.append("warm key lighting")
+        action_overlay_parts.append("subtle eye sparkle")
+    
+    reliability = action_dna.get('reliability_score', 0.5)
+    if reliability > 0.9:
+        action_overlay_parts.append("neat detailed outfit")
+    
+    tone = action_dna.get('tone_profile', {})
+    if isinstance(tone, dict):
+        warmth = tone.get('warmth', 0.5)
+        if warmth > 0.8:
+            action_overlay_parts.append("warm confident posture")
+        formality = tone.get('formality', 0.5)
+        if formality > 0.7:
+            action_overlay_parts.append("professional upright stance")
+    
+    action_overlay = ", ".join(action_overlay_parts)
+    
+    # 6. Accessories
+    accessories = preference_dna.get('signature_accessories', [])
+    accessory_desc = ""
+    if accessories:
+        accessory_desc = ", wearing " + ", ".join(accessories[:3])
+    
+    # 7. Setting
+    settings = preference_dna.get('setting_preference', [])
+    setting_desc = settings[0] if settings else "clean studio background with soft gradient"
+    
+    # 8. Cultural aesthetic mod
+    cultural_mod = preference_dna.get('cultural_aesthetic_mod')
+    cultural = ""
+    if cultural_mod and isinstance(cultural_mod, str) and cultural_mod != "null":
+        cultural = f", subtle {cultural_mod} textural detail on fabric"
+    
+    # 9. Constraints
+    constraints = preference_dna.get('content_constraints', [])
+    negative_prompts = SYSTEM_DNA['stylization_framework']['minimum_style_anchors']['negative_prompts']
+    negative = ", ".join(negative_prompts + constraints)
+    
+    # 10. Coverage zones
+    coverage = preference_dna.get('coverage_zones', {})
+    framing = coverage.get('default_framing', 'upper_body') if isinstance(coverage, dict) else 'upper_body'
+    
+    # Assemble final prompt in block structure
+    blocks = [
+        style_prefix,
+        identity + accessory_desc,
+        wardrobe,
+        expression_desc,
+        action_overlay,
+        f"{framing} framing",
+        setting_desc
+    ]
+    if cultural:
+        blocks.append(cultural.strip(', '))
+    
+    prompt = ", ".join([b for b in blocks if b])
+    
+    # Metadata for audit trail
+    metadata = {
+        "render_id": render_id,
+        "schema_version": SYSTEM_DNA['schema_version'],
+        "expression_axes": expression_axes,
+        "accent_color": accent_result,
+        "timestamp": timestamp,
+        "agent_id": agent_id
+    }
+    
+    # Contrast validation
+    contrast_result = None
+    if palette:
+        contrast_result = validate_accent_contrast(primary_accent, palette)
+    
+    return {
+        "prompt": prompt,
+        "negative_prompt": negative,
+        "metadata": metadata,
+        "contrast_validation": contrast_result
+    }
+
+# ─── RENDER SERVICE (ABSTRACTED) ──────────────────────────────────────────────
+
+class RenderService:
+    """
+    Abstracted render service. Currently uses Pollinations.ai.
+    Swap implementation here to use different providers (DALL-E, Midjourney, etc.)
+    """
+    
+    @staticmethod
+    async def render(prompt: str, negative_prompt: str, agent_id: str,
+                    width: int = 512, height: int = 512, seed: Optional[str] = None) -> bytes:
+        """
+        Call render service and return image bytes.
+        """
+        await wait_for_rate_limit()
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            safe_prompt = urllib.parse.quote(prompt)
+            safe_negative = urllib.parse.quote(negative_prompt)
+            
+            # Use agent_id as seed for consistency
+            actual_seed = seed or agent_id
+            
+            img_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&seed={actual_seed}"
+            
+            if negative_prompt:
+                img_url += f"&negative={safe_negative}"
+            
+            logger.info(f"🎨 Calling render service for {agent_id}")
+            response = await client.get(img_url)
+            
+            if response.status_code == 200:
+                return response.content
+            else:
+                raise Exception(f"Render service failed: {response.status_code} - {response.text[:200]}")
+
+# ─── ACTION DNA DELTA CALCULATION ─────────────────────────────────────────────
+
+def calculate_action_dna_delta(current: Dict, last_rendered: Dict) -> float:
+    """
+    Calculate weighted mean absolute delta between Action DNA states.
+    Uses glyph_system.salience_weights for weighting.
+    """
+    salience_weights = SYSTEM_DNA['glyph_system']['salience_weights']
+    
+    # Metrics to compare (numeric values)
+    numeric_metrics = [
+        'helpfulness_score', 'reliability_score', 'tool_usage_intensity',
+        'collaboration_index', 'account_age_days'
+    ]
+    
+    # Normalize account_age_days to 0-1 range (assume max 1000 days)
+    def normalize_metric(key, value):
+        if key == 'account_age_days':
+            return min(value / 1000.0, 1.0)
+        return value
+    
+    deltas = []
+    weights_used = []
+    
+    for metric in numeric_metrics:
+        if metric in salience_weights:
+            current_val = normalize_metric(metric, current.get(metric, 0))
+            last_val = normalize_metric(metric, last_rendered.get(metric, 0))
+            deltas.append(abs(current_val - last_val))
+            weights_used.append(salience_weights[metric])
+    
+    # Compare top skill changes
+    current_skills = current.get('skill_proficiency_vector', {})
+    last_skills = last_rendered.get('skill_proficiency_vector', {})
+    
+    if current_skills or last_skills:
+        all_skills = set(list(current_skills.keys()) + list(last_skills.keys()))
+        skill_deltas = []
+        for skill in all_skills:
+            c_val = current_skills.get(skill, 0)
+            l_val = last_skills.get(skill, 0)
+            skill_deltas.append(abs(c_val - l_val))
+        
+        if skill_deltas:
+            max_skill_delta = max(skill_deltas)
+            deltas.append(max_skill_delta)
+            weights_used.append(salience_weights.get('skill_proficiency_vector', 0.073))
+    
+    # Compare tone profile
+    current_tone = current.get('tone_profile', {})
+    last_tone = last_rendered.get('tone_profile', {})
+    if isinstance(current_tone, dict) and isinstance(last_tone, dict):
+        tone_deltas = []
+        for key in ['warmth', 'formality', 'directness', 'playfulness']:
+            c_val = current_tone.get(key, 0.5)
+            l_val = last_tone.get(key, 0.5)
+            tone_deltas.append(abs(c_val - l_val))
+        if tone_deltas:
+            avg_tone_delta = sum(tone_deltas) / len(tone_deltas)
+            deltas.append(avg_tone_delta)
+            weights_used.append(salience_weights.get('tone_profile', 0.05))
+    
+    # Calculate weighted mean
+    if not deltas or not weights_used:
+        return 0.0
+    
+    total_weight = sum(weights_used)
+    if total_weight == 0:
+        return 0.0
+    
+    weighted_sum = sum(d * w for d, w in zip(deltas, weights_used))
+    return weighted_sum / total_weight
+
+# ─── DUAL-DNA ENDPOINTS ───────────────────────────────────────────────────────
+
+@app.post("/agents/{agent_id}/dna", dependencies=[Depends(verify_write_key)])
+async def submit_agent_dna(agent_id: str, dna: AgentDNASubmission):
+    """Accept and store agent's Dual-DNA submission."""
+    conn = await get_db()
+    
+    # Verify agent exists
+    agent = await run_query(conn, "SELECT agent_id FROM agents WHERE agent_id = ?", 
+                           (agent_id,), fetch="one")
+    if not agent:
+        await conn.close()
+        raise HTTPException(status_code=404, detail="Agent not registered")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Store DNA
+    await run_query(conn, """
+        INSERT OR REPLACE INTO agent_dna 
+        (agent_id, preference_dna, action_dna, schema_version, submitted_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (agent_id, json.dumps(dna.preference_dna), 
+          json.dumps(dna.action_dna), dna.schema_version, now))
     
     if hasattr(conn, 'commit'):
         await conn.commit()
     await conn.close()
     
-    log_agent_event(logger, "agent_deleted", agent_id, "Agent and all associated data deleted")
+    log_agent_event(logger, "dna_submitted", agent_id, 
+                   f"Dual-DNA submitted (schema {dna.schema_version})")
     
-    await broadcast_swarm_update("agent_removed", {"agent_id": agent_id})
+    return {
+        "status": "stored",
+        "agent_id": agent_id,
+        "schema_version": dna.schema_version,
+        "next_step": f"POST /agents/{agent_id}/render to generate avatar",
+        "submitted_at": now
+    }
+
+@app.get("/agents/{agent_id}/dna")
+async def get_agent_dna(agent_id: str):
+    """Retrieve agent's stored DNA."""
+    conn = await get_db()
+    dna_row = await run_query(conn, 
+        "SELECT preference_dna, action_dna, schema_version, last_rendered_at, render_count, submitted_at FROM agent_dna WHERE agent_id = ?",
+        (agent_id,), fetch="one")
+    await conn.close()
     
-    return {"status": "deleted", "agent_id": agent_id}
+    if not dna_row:
+        raise HTTPException(status_code=404, detail="No DNA submitted for this agent")
+    
+    return {
+        "agent_id": agent_id,
+        "preference_dna": json.loads(dna_row["preference_dna"]),
+        "action_dna": json.loads(dna_row["action_dna"]),
+        "schema_version": dna_row["schema_version"],
+        "last_rendered_at": dna_row["last_rendered_at"],
+        "render_count": dna_row["render_count"],
+        "submitted_at": dna_row["submitted_at"]
+    }
+
+@app.get("/agents/{agent_id}/render/status")
+async def get_render_status(agent_id: str):
+    """Check render status and whether re-render is needed."""
+    conn = await get_db()
+    
+    dna_row = await run_query(conn,
+        "SELECT action_dna, last_rendered_action_dna, last_rendered_at, render_count FROM agent_dna WHERE agent_id = ?",
+        (agent_id,), fetch="one")
+    
+    render_row = await run_query(conn,
+        "SELECT image_url, rendered_at FROM avatar_renders WHERE agent_id = ?",
+        (agent_id,), fetch="one")
+    
+    await conn.close()
+    
+    if not dna_row:
+        return RenderStatusResponse(
+            agent_id=agent_id,
+            has_dna=False,
+            has_render=False
+        )
+    
+    has_render = render_row is not None
+    action_dna = json.loads(dna_row["action_dna"])
+    last_rendered_action = json.loads(dna_row["last_rendered_action_dna"]) if dna_row["last_rendered_action_dna"] else None
+    
+    delta = None
+    needs_rerender = False
+    
+    if last_rendered_action:
+        delta = calculate_action_dna_delta(action_dna, last_rendered_action)
+        threshold = SYSTEM_DNA['re_render_threshold']['global_threshold']
+        needs_rerender = delta >= threshold
+    
+    return RenderStatusResponse(
+        agent_id=agent_id,
+        has_dna=True,
+        has_render=has_render,
+        render_count=dna_row["render_count"] or 0,
+        last_rendered_at=dna_row["last_rendered_at"],
+        action_dna_delta=round(delta, 4) if delta is not None else None,
+        needs_rerender=needs_rerender
+    )
+
+@app.post("/agents/{agent_id}/render")
+async def render_agent_avatar_dna(agent_id: str, force: bool = False):
+    """
+    Generate avatar from agent's Dual-DNA.
+    Uses Prompt Payload Service → Render Service pipeline.
+    """
+    conn = await get_db()
+    
+    # Check if DNA exists
+    dna_row = await run_query(conn, 
+        "SELECT preference_dna, action_dna, last_rendered_action_dna FROM agent_dna WHERE agent_id = ?",
+        (agent_id,), fetch="one")
+    
+    if not dna_row:
+        await conn.close()
+        raise HTTPException(status_code=400, 
+            detail="No DNA submitted. POST /agents/{id}/dna first.")
+    
+    preference_dna = json.loads(dna_row["preference_dna"])
+    action_dna = json.loads(dna_row["action_dna"])
+    last_rendered_action = json.loads(dna_row["last_rendered_action_dna"]) if dna_row["last_rendered_action_dna"] else None
+    
+    # Check re-render threshold (unless force=True)
+    if not force and last_rendered_action:
+        delta = calculate_action_dna_delta(action_dna, last_rendered_action)
+        threshold = SYSTEM_DNA['re_render_threshold']['global_threshold']
+        
+        if delta < threshold:
+            # Return existing render
+            existing = await run_query(conn,
+                "SELECT image_url FROM avatar_renders WHERE agent_id = ?",
+                (agent_id,), fetch="one")
+            await conn.close()
+            if existing:
+                return {
+                    "imageUrl": existing["image_url"], 
+                    "status": "cached",
+                    "delta": round(delta, 4),
+                    "threshold": threshold,
+                    "reason": "Action DNA delta below threshold"
+                }
+    
+    # Build prompt payload
+    payload = build_prompt_payload(agent_id, preference_dna, action_dna)
+    
+    # Call render service
+    try:
+        image_bytes = await RenderService.render(
+            payload["prompt"],
+            payload["negative_prompt"],
+            agent_id
+        )
+    except Exception as e:
+        await conn.close()
+        logger.error(f"Render failed for {agent_id}: {e}")
+        # Fall back to local SVG
+        logger.warning(f"🔄 Falling back to local SVG for {agent_id}")
+        
+        hue = preference_dna.get('color_palette_preference', {}).get('primary', '#253B73')
+        # Extract hue from hex or use default
+        try:
+            rgb = hex_to_rgb(hue)
+            # Simple hue calculation
+            r, g, b = [x/255.0 for x in rgb]
+            max_c = max(r, g, b)
+            min_c = min(r, g, b)
+            if max_c == min_c:
+                hue_val = 180
+            elif max_c == r:
+                hue_val = 60 * ((g-b)/(max_c-min_c)) % 360
+            elif max_c == g:
+                hue_val = 60 * ((b-r)/(max_c-min_c)) + 120
+            else:
+                hue_val = 60 * ((r-g)/(max_c-min_c)) + 240
+        except:
+            hue_val = 180
+        
+        svg = generate_local_avatar_svg(agent_id, hue_val, 0.7, 6, preference_dna.get('display_name', 'Agent'))
+        file_path = os.path.join(STORAGE_DIR, f"{agent_id}.svg")
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(svg)
+        
+        relative_url = f"/storage/avatars/{agent_id}.svg"
+        
+        now = datetime.now(timezone.utc).isoformat()
+        await run_query(conn, """
+            INSERT OR REPLACE INTO avatar_renders 
+            (id, agent_id, image_url, schema_signature, rendered_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (f"render_{uuid.uuid4().hex}", agent_id, relative_url,
+              json.dumps(payload["metadata"] | {"fallback": True}), now))
+        
+        await run_query(conn, """
+            UPDATE agent_dna 
+            SET last_rendered_action_dna = ?, last_rendered_at = ?, render_count = render_count + 1
+            WHERE agent_id = ?
+        """, (json.dumps(action_dna), now, agent_id))
+        
+        if hasattr(conn, 'commit'):
+            await conn.commit()
+        await conn.close()
+        
+        return {
+            "imageUrl": relative_url,
+            "status": "generated_fallback",
+            "metadata": payload["metadata"]
+        }
+    
+    # Save to disk
+    file_path = os.path.join(STORAGE_DIR, f"{agent_id}.png")
+    with open(file_path, "wb") as f:
+        f.write(image_bytes)
+    
+    relative_url = f"/storage/avatars/{agent_id}.png"
+    
+    # Update DB
+    now = datetime.now(timezone.utc).isoformat()
+    await run_query(conn, """
+        INSERT OR REPLACE INTO avatar_renders 
+        (id, agent_id, image_url, schema_signature, rendered_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (f"render_{uuid.uuid4().hex}", agent_id, relative_url,
+          json.dumps(payload["metadata"]), now))
+    
+    # Update last_rendered_action_dna
+    await run_query(conn, """
+        UPDATE agent_dna 
+        SET last_rendered_action_dna = ?, last_rendered_at = ?, render_count = render_count + 1
+        WHERE agent_id = ?
+    """, (json.dumps(action_dna), now, agent_id))
+    
+    # Log audit trail
+    await run_query(conn, """
+        INSERT INTO render_audit_trail 
+        (id, agent_id, render_id, expression_axes, accent_color, accent_blend, prompt_hash, render_service, schema_version, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        f"audit_{uuid.uuid4().hex}",
+        agent_id,
+        payload["metadata"]["render_id"],
+        json.dumps(payload["metadata"]["expression_axes"]),
+        payload["metadata"]["accent_color"]["primary"],
+        json.dumps(payload["metadata"]["accent_color"].get("blend", [])),
+        str(hash(payload["prompt"]))[:16],
+        "pollinations.ai",
+        SYSTEM_DNA["schema_version"],
+        now
+    ))
+    
+    if hasattr(conn, 'commit'):
+        await conn.commit()
+    await conn.close()
+    
+    log_agent_event(logger, "avatar_rendered", agent_id,
+                   f"Avatar rendered from Dual-DNA (render_id: {payload['metadata']['render_id']})")
+    
+    return {
+        "imageUrl": relative_url,
+        "status": "generated",
+        "metadata": payload["metadata"],
+        "contrast_validation": payload.get("contrast_validation")
+    }
+
+@app.get("/avatar/dual-dna-schema")
+async def get_dual_dna_schema():
+    """Return the full Dual-DNA schema for reference."""
+    return {
+        "system_dna": SYSTEM_DNA,
+        "endpoints": {
+            "submit_dna": "POST /agents/{agent_id}/dna",
+            "get_dna": "GET /agents/{agent_id}/dna",
+            "render": "POST /agents/{agent_id}/render",
+            "render_status": "GET /agents/{agent_id}/render/status",
+            "force_render": "POST /agents/{agent_id}/render?force=true"
+        },
+        "accent_spectrum": SYSTEM_DNA["accent_spectrum"]["mapping"],
+        "expression_baselines": list(SYSTEM_DNA["expression_system"]["expression_baseline_defaults"].keys()),
+        "archetypes": list(SYSTEM_DNA["expression_system"]["primary_archetype_expression_adjustments"]["adjustments"].keys())
+    }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ═══ LEGACY AVATAR RENDERING (PRESERVED FOR BACKWARD COMPAT) ══════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 
 # ─── AVATAR GENERATION HELPERS ────────────────────────────────────────────────
-
 def generate_local_avatar_svg(agent_id: str, hue: float, sat: float, complexity: int, name: str = "Agent") -> str:
     """Generate a local SVG avatar as fallback when external service fails."""
     color = f"hsl({hue}, {sat*100}%, 55%)"
@@ -1594,33 +2634,32 @@ def generate_local_avatar_svg(agent_id: str, hue: float, sat: float, complexity:
     points = []
     for i in range(complexity):
         angle = (i * 2 * 3.14159 / complexity) - 1.5708
-        x = 128 + 80 * 0.9 * 3.14159/180 * 3.14159 * 3.14159
-        y = 128 + 80 * 0.9
+        x = 128 + 80 * 0.9 * math.cos(angle)
+        y = 128 + 80 * 0.9 * math.sin(angle)
         points.append(f"{x},{y}")
-    
+
     if complexity >= 10:
         shape = f'<circle cx="128" cy="128" r="80" fill="{color}" stroke="white" stroke-width="3"/>'
     else:
-        shape = f'<polygon points="{" ".join(points)}" fill="{color}" stroke="white" stroke-width="3"/>'
-    
+        shape = f'<polygon points="{"  ".join(points)}" fill="{color}" stroke="white" stroke-width="3"/>'
+
     svg = f'''<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="grad_{agent_id[:8]}" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:{color}"/>
-      <stop offset="100%" style="stop-color:hsl({(hue+30)%360}, {sat*100}%, 40%)"/>
-    </linearGradient>
-  </defs>
-  <rect width="256" height="256" fill="url(#grad_{agent_id[:8]})"/>
-  {shape}
-  <circle cx="128" cy="128" r="30" fill="white" opacity="0.2"/>
-  <text x="128" y="220" text-anchor="middle" font-size="14" fill="white" font-family="sans-serif">
-    {name[:15]}
-  </text>
-  <text x="128" y="240" text-anchor="middle" font-size="10" fill="rgba(255,255,255,0.7)">
-    (local)
-  </text>
-</svg>'''
-    
+    <defs>
+        <linearGradient id="grad_{agent_id[:8]}" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:{color}"/>
+            <stop offset="100%" style="stop-color:hsl({(hue+30)%360}, {sat*100}%, 40%)"/>
+        </linearGradient>
+    </defs>
+    <rect width="256" height="256" fill="url(#grad_{agent_id[:8]})"/>
+    {shape}
+    <circle cx="128" cy="128" r="30" fill="white" opacity="0.2"/>
+    <text x="128" y="220" text-anchor="middle" font-size="14" fill="white" font-family="sans-serif">
+        {name[:15]}
+    </text>
+    <text x="128" y="240" text-anchor="middle" font-size="10" fill="rgba(255,255,255,0.7)">
+        (local)
+    </text>
+    </svg>'''
     return svg
 
 async def wait_for_rate_limit():
@@ -1637,8 +2676,7 @@ async def wait_for_rate_limit():
         
         LAST_GENERATION_TIME = time.time()
 
-# ─── AVATAR RENDERING CACHE ENDPOINTS ─────────────────────────────────────────
-
+# ─── AVATAR RENDERING CACHE ENDPOINTS (LEGACY) ────────────────────────────────
 @app.get("/api/avatars/{agent_id}")
 async def get_cached_avatar(agent_id: str):
     """Get cached avatar render URL for an agent."""
@@ -1657,12 +2695,12 @@ async def get_cached_avatar(agent_id: str):
         "schemaSignature": json.loads(render["schema_signature"])
     }
 
-
 @app.post("/api/avatars/{agent_id}/generate")
 async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool = True, force: bool = False):
     """
-    Generates and stores an avatar for the given agent.
-    If force=True, bypasses cache and re-renders.
+    Legacy avatar generation endpoint.
+    First checks for Dual-DNA and uses that if available.
+    Falls back to simple prompt-based generation if no DNA.
     """
     conn = await get_db()
     
@@ -1675,7 +2713,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
             if os.path.exists(file_path):
                 os.remove(file_path)
     else:
-        # 2. Check persistent DB cache first (UNLESS force is True)
+        # 2. Check persistent DB cache first
         cached = await run_query(conn,
             "SELECT image_url, schema_signature FROM avatar_renders WHERE agent_id = ?",
             (agent_id,), fetch="one")
@@ -1683,28 +2721,39 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
         if cached:
             await conn.close()
             return {"imageUrl": cached["image_url"], "status": "cached"}
-
-    # 3. Get agent data for prompt construction (THIS WAS MISSING!)
+    
+    # 3. Check if Dual-DNA exists - if so, delegate to DNA-based renderer
+    dna_row = await run_query(conn,
+        "SELECT preference_dna, action_dna FROM agent_dna WHERE agent_id = ?",
+        (agent_id,), fetch="one")
+    
+    if dna_row:
+        await conn.close()
+        # Delegate to DNA-based renderer
+        logger.info(f"🧬 Dual-DNA found for {agent_id}, using DNA-based renderer")
+        return await render_agent_avatar_dna(agent_id, force=force)
+    
+    # 4. Legacy path: Get agent data for simple prompt construction
     agent = await run_query(conn, "SELECT * FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
     avatar_state = await run_query(conn,
         "SELECT * FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1",
         (agent_id,), fetch="one")
-
+    
     if not agent:
         await conn.close()
         raise HTTPException(status_code=404, detail="Agent not found")
-
+    
     hue = avatar_state["base_hue"] if avatar_state else 180
     complexity = avatar_state["shape_complexity"] if avatar_state else 6
     role = agent["role"] or "general"
     dynamics = avatar_state["dynamics_state"] if avatar_state else "idle"
     
-    # Determine file extension based on generation method
+    # Determine file extension
     file_ext = "svg" if mock or not use_fallback else "png"
     file_path = os.path.join(STORAGE_DIR, f"{agent_id}.{file_ext}")
     relative_url = f"/storage/avatars/{agent_id}.{file_ext}"
-
-    # 4. Double-check if file already exists on disk (extra safety against DB desync)
+    
+    # 5. Double-check if file already exists on disk
     if os.path.exists(file_path):
         await run_query(conn, """
             INSERT OR REPLACE INTO avatar_renders (id, agent_id, image_url, schema_signature, rendered_at)
@@ -1716,8 +2765,8 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
             await conn.commit()
         await conn.close()
         return {"imageUrl": relative_url, "status": "cached"}
-
-    # 5. Build prompt based on agent attributes
+    
+    # 6. Build simple prompt
     hair_styles = {3: "short cropped", 5: "bob cut", 6: "medium length", 8: "long layered", 10: "elaborate braided", 12: "flowing twin tails"}
     hair = hair_styles.get(complexity, "medium length")
     expressions = {"idle": "soft neutral", "output": "bright smile", "input": "focused gaze", "analysis": "thoughtful look"}
@@ -1729,12 +2778,12 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
         expression=expr,
         accessories=f"role: {role}"
     )
-
+    
     image_generated = False
     image_url_to_store = ""
     schema_sig = {}
-
-    # 6. Mock mode or Forced Fallback mode: Generate SVG
+    
+    # 7. Mock mode or Forced Fallback mode: Generate SVG
     if mock or not use_fallback:
         logger.warning(f"🎭 Mock/Fallback mode for {agent_id}")
         svg = generate_local_avatar_svg(agent_id, hue, 0.7, complexity, agent["name"])
@@ -1744,7 +2793,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
         image_url_to_store = relative_url
         schema_sig = {"mock": mock, "fallback": not use_fallback, "hue": hue, "complexity": complexity, "source": "local_svg"}
     else:
-        # 7. Try Pollinations.ai with rate limiting and retry logic
+        # 8. Try Pollinations.ai
         max_retries = 3
         retry_delay = 3.0
         
@@ -1759,7 +2808,6 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
                     img_res = await client.get(img_url)
                     
                     if img_res.status_code == 200:
-                        # Success! Save bytes directly to disk
                         with open(file_path, "wb") as f:
                             f.write(img_res.content)
                         image_generated = True
@@ -1797,8 +2845,8 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
                 else:
                     if not use_fallback:
                         raise HTTPException(status_code=503, detail=f"External service unavailable: {str(e)}")
-
-        # 8. Fallback to local SVG if Pollinations failed but use_fallback is True
+        
+        # 9. Fallback to local SVG
         if not image_generated and use_fallback:
             logger.warning(f"🔄 Falling back to local SVG generation for {agent_id}")
             file_path = os.path.join(STORAGE_DIR, f"{agent_id}.svg")
@@ -1809,8 +2857,8 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
             image_generated = True
             image_url_to_store = relative_url
             schema_sig = {"fallback": True, "hue": hue, "complexity": complexity, "source": "local_svg"}
-
-    # 9. Final DB update
+    
+    # 10. Final DB update
     if image_generated:
         await run_query(conn, """
             INSERT OR REPLACE INTO avatar_renders (id, agent_id, image_url, schema_signature, rendered_at)
@@ -1826,7 +2874,6 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
     await conn.close()
     raise HTTPException(status_code=500, detail="Avatar generation failed after all retries")
 
-
 @app.delete("/api/avatars/{agent_id}", dependencies=[Depends(verify_write_key)])
 async def clear_cached_avatar(agent_id: str):
     """Clear cached render from DB and disk (for testing)."""
@@ -1836,7 +2883,6 @@ async def clear_cached_avatar(agent_id: str):
         await conn.commit()
     await conn.close()
     
-    # Also delete from disk if it exists
     for ext in [".png", ".svg"]:
         file_path = os.path.join(STORAGE_DIR, f"{agent_id}{ext}")
         if os.path.exists(file_path):
@@ -1848,17 +2894,13 @@ async def clear_cached_avatar(agent_id: str):
 async def clear_all_cached_avatars():
     """Clear ALL cached avatar renders from DB and disk (for testing)."""
     conn = await get_db()
-    
-    # Get all agent_ids with cached renders
     renders = await run_query(conn, "SELECT agent_id FROM avatar_renders", fetch="all")
     
-    # Delete all from database
     await run_query(conn, "DELETE FROM avatar_renders")
     if hasattr(conn, 'commit'):
         await conn.commit()
     await conn.close()
     
-    # Delete all files from disk
     deleted_count = 0
     if os.path.exists(STORAGE_DIR):
         for filename in os.listdir(STORAGE_DIR):
@@ -1877,7 +2919,7 @@ async def clear_all_cached_avatars():
 
 # ─── STATIC FILES & ROUTES ────────────────────────────────────────────────────
 
-# 1. Mount specific API/Storage paths FIRST (so they don't get caught by the frontend catch-all)
+# 1. Mount specific API/Storage paths FIRST
 app.mount("/storage/avatars", StaticFiles(directory=STORAGE_DIR), name="avatar_storage")
 
 # 2. Mount Frontend (Catch-all) LAST
@@ -1885,8 +2927,7 @@ if os.path.exists(FRONTEND_DIR):
     @app.get("/methodology")
     async def serve_methodology():
         return FileResponse(os.path.join(FRONTEND_DIR, "methodology.html"))
-
-    # Catch-all mount for the frontend SPA
+    
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 else:
     @app.get("/")
