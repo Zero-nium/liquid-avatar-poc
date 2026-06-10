@@ -2232,12 +2232,13 @@ def build_prompt_payload(agent_id: str, preference_dna: Dict, action_dna: Dict) 
 class RenderService:
     """
     Abstracted render service. 
-    Using Replicate for Animagine XL 3.1.
+    Using Replicate for Animagine XL 3.1 (version-specific endpoint).
     """
     
     REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
-    # FIXED: Updated to the correct official model owner on Replicate
-    REPLICATE_MODEL_URL = "https://api.replicate.com/v1/models/cagliostrolab/animagine-xl-3.1/predictions?wait=true"
+    # Specific version hash for cjwbw/animagine-xl-3.1
+    REPLICATE_VERSION = "6afe2e6b27dad2d6f480b59195c221884b6acc589ff4d05ff0e5fc058690fbb9"
+    REPLICATE_API_URL = "https://api.replicate.com/v1/predictions"
 
     @staticmethod
     async def render(prompt: str, negative_prompt: str, agent_id: str,
@@ -2262,6 +2263,7 @@ class RenderService:
         consistent_seed = int(hash(agent_id) % (2**32 - 1))
 
         payload = {
+            "version": RenderService.REPLICATE_VERSION,
             "input": {
                 "prompt": full_prompt,
                 "negative_prompt": sd_negative,
@@ -2274,25 +2276,69 @@ class RenderService:
         }
 
         async with httpx.AsyncClient(timeout=120.0) as client:
-            logger.info(f"🎨 Calling Replicate (Animagine XL) for {agent_id}")
+            logger.info(f"🎨 Calling Replicate (Animagine XL v3.1) for {agent_id}")
+            
+            # Step 1: Create the prediction
             response = await client.post(
-                RenderService.REPLICATE_MODEL_URL, 
+                RenderService.REPLICATE_API_URL, 
                 json=payload, 
                 headers=headers
             )
             
-            if response.status_code == 200:
-                data = response.json()
-                # Replicate returns a list of URLs in the output
-                if "output" in data and isinstance(data["output"], list) and len(data["output"]) > 0:
-                    image_url = data["output"][0]
-                    logger.info(f"✅ Downloading generated image from {image_url}")
-                    img_res = await client.get(image_url)
-                    return img_res.content
-                else:
-                    raise Exception(f"Replicate returned invalid output format: {data}")
-            else:
+            if response.status_code not in [200, 201]:
                 raise Exception(f"Replicate API failed: {response.status_code} - {response.text}")
+            
+            prediction = response.json()
+            prediction_id = prediction.get("id")
+            
+            if not prediction_id:
+                raise Exception(f"No prediction ID returned: {prediction}")
+            
+            logger.info(f"⏳ Prediction created: {prediction_id}, waiting for completion...")
+            
+            # Step 2: Poll for completion
+            max_wait = 90  # seconds
+            waited = 0
+            poll_interval = 2
+            
+            while waited < max_wait:
+                await asyncio.sleep(poll_interval)
+                waited += poll_interval
+                
+                status_response = await client.get(
+                    f"https://api.replicate.com/v1/predictions/{prediction_id}",
+                    headers=headers
+                )
+                
+                if status_response.status_code != 200:
+                    logger.warning(f"Poll failed: {status_response.status_code}")
+                    continue
+                
+                status_data = status_response.json()
+                status = status_data.get("status")
+                
+                logger.info(f"⏳ Prediction {prediction_id} status: {status} ({waited}s)")
+                
+                if status == "succeeded":
+                    output = status_data.get("output")
+                    if output and isinstance(output, list) and len(output) > 0:
+                        image_url = output[0]
+                        logger.info(f"✅ Downloading generated image from {image_url}")
+                        img_res = await client.get(image_url)
+                        return img_res.content
+                    else:
+                        raise Exception(f"Prediction succeeded but no output: {status_data}")
+                
+                elif status == "failed":
+                    error = status_data.get("error", "Unknown error")
+                    raise Exception(f"Prediction failed: {error}")
+                
+                elif status in ["starting", "processing"]:
+                    continue
+                else:
+                    logger.warning(f"Unknown status: {status}")
+            
+            raise Exception(f"Prediction timed out after {max_wait}s")
 
 # ─── ACTION DNA DELTA CALCULATION ─────────────────────────────────────────────
 
