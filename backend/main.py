@@ -2494,16 +2494,19 @@ async def render_agent_avatar_dna(agent_id: str, force: bool = False):
             agent_id
         )
     except Exception as e:
-        await conn.close()
+        # FIX: Do NOT close connection here, we still need it for the fallback DB insert
         logger.error(f"Render failed for {agent_id}: {e}")
-        # Fall back to local SVG
         logger.warning(f"🔄 Falling back to local SVG for {agent_id}")
         
-        hue = preference_dna.get('color_palette_preference', {}).get('primary', '#253B73')
-        # Extract hue from hex or use default
+        # FIX: Properly extract hex color from string like "deep indigo #253B73"
+        palette = preference_dna.get('color_palette_preference', {})
+        primary_color_str = palette.get('primary', '#253B73')
+        import re
+        hex_match = re.search(r'#[0-9a-fA-F]{6}', primary_color_str)
+        hex_color = hex_match.group(0) if hex_match else '#253B73'
+        
         try:
-            rgb = hex_to_rgb(hue)
-            # Simple hue calculation
+            rgb = hex_to_rgb(hex_color)
             r, g, b = [x/255.0 for x in rgb]
             max_c = max(r, g, b)
             min_c = min(r, g, b)
@@ -2541,7 +2544,7 @@ async def render_agent_avatar_dna(agent_id: str, force: bool = False):
         
         if hasattr(conn, 'commit'):
             await conn.commit()
-        await conn.close()
+        await conn.close()  # FIX: Close connection only after all queries are done
         
         return {
             "imageUrl": relative_url,
@@ -2549,7 +2552,7 @@ async def render_agent_avatar_dna(agent_id: str, force: bool = False):
             "metadata": payload["metadata"]
         }
     
-    # Save to disk
+    # Save to disk (Success path)
     file_path = os.path.join(STORAGE_DIR, f"{agent_id}.png")
     with open(file_path, "wb") as f:
         f.write(image_bytes)
