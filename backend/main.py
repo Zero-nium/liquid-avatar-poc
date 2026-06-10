@@ -2231,37 +2231,75 @@ def build_prompt_payload(agent_id: str, preference_dna: Dict, action_dna: Dict) 
 
 class RenderService:
     """
-    Abstracted render service. Currently uses Pollinations.ai.
-    Swap implementation here to use different providers (DALL-E, Midjourney, etc.)
+    Abstracted render service. 
+    Currently using Hugging Face Serverless API (Animagine XL 3.1).
     """
     
+    HF_API_TOKEN = os.getenv("HF_API_TOKEN")
+    # Animagine XL 3.1 is the best open-source anime model, understands complex DNA prompts
+    HF_MODEL_URL = "https://api-inference.huggingface.co/models/cagliostrolab/animagine-xl-3.1"
+
     @staticmethod
     async def render(prompt: str, negative_prompt: str, agent_id: str,
-                    width: int = 512, height: int = 512, seed: Optional[str] = None) -> bytes:
-        """
-        Call render service and return image bytes.
-        """
-        await wait_for_rate_limit()
+                    width: int = 1024, height: int = 1024) -> bytes:
         
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            safe_prompt = urllib.parse.quote(prompt)
-            safe_negative = urllib.parse.quote(negative_prompt)
-            
-            # Use agent_id as seed for consistency
-            actual_seed = seed or agent_id
-            
-            img_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width={width}&height={height}&nologo=true&seed={actual_seed}"
-            
-            if negative_prompt:
-                img_url += f"&negative={safe_negative}"
-            
-            logger.info(f"🎨 Calling render service for {agent_id}")
-            response = await client.get(img_url)
+        if not RenderService.HF_API_TOKEN:
+            raise Exception("HF_API_TOKEN environment variable not set on Render.")
+
+        headers = {
+            "Authorization": f"Bearer {RenderService.HF_API_TOKEN}",
+            "Content-Type": "application/json"
+        }
+        
+        # Animagine XL requires specific quality tags to trigger its best anime style
+        quality_tags = "masterpiece, high quality, sharp focus, anime coloring, cel shading, official art"
+        full_prompt = f"{quality_tags}, {prompt}"
+        
+        # SDXL standard negative prompt
+        sd_negative = f"lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, 3d, photorealistic, {negative_prompt}"
+        
+        # Generate a consistent seed based on agent_id so the same DNA always yields the same face
+        consistent_seed = int(hash(agent_id) % (2**32 - 1))
+
+        payload = {
+            "inputs": full_prompt,
+            "parameters": {
+                "negative_prompt": sd_negative,
+                "width": width,
+                "height": height,
+                "num_inference_steps": 28,
+                "guidance_scale": 7.0,
+                "seed": consistent_seed
+            }
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            logger.info(f"🎨 Calling Hugging Face (Animagine XL) for {agent_id}")
+            response = await client.post(
+                RenderService.HF_MODEL_URL, 
+                json=payload, 
+                headers=headers
+            )
             
             if response.status_code == 200:
                 return response.content
-            else:
-                raise Exception(f"Render service failed: {response.status_code} - {response.text[:200]}")
+            
+            elif response.status_code == 503:
+                # Hugging Face free tier has "cold starts". If the model is asleep, it returns 503 with an estimated time.
+                try:
+                    error_data = response.json()
+                    estimated_time = error_data.get("estimated_time", 20)
+                    logger.warning(f"⏳ Model is loading on HF (cold start). Waiting {estimated_time:.1f}s...")
+                    await asyncio.sleep(estimated_time + 5)
+                    
+                    # Retry once after waiting
+                    response = await client.post(RenderService.HF_MODEL_URL, json=payload, headers=headers)
+                    if response.status_code == 200:
+                        return response.content
+                except Exception as e:
+                    logger.error(f"Failed to parse HF cold start wait time: {e}")
+            
+            raise Exception(f"HF API failed: {response.status_code} - {response.text[:200]}")
 
 # ─── ACTION DNA DELTA CALCULATION ─────────────────────────────────────────────
 
