@@ -2232,38 +2232,38 @@ def build_prompt_payload(agent_id: str, preference_dna: Dict, action_dna: Dict) 
 class RenderService:
     """
     Abstracted render service. 
-    Currently using Hugging Face Serverless API (Animagine XL 3.1).
+    Using Replicate for Animagine XL 3.1 (Accessible in HK, High Quality Anime).
     """
     
-    HF_API_TOKEN = os.getenv("HF_API_TOKEN")
-    # Animagine XL 3.1 is the best open-source anime model, understands complex DNA prompts
-    HF_MODEL_URL = "https://api-inference.huggingface.co/models/cagliostrolab/animagine-xl-3.1"
+    REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+    # Replicate URL for Animagine XL 3.1 with wait_for_completion
+    REPLICATE_MODEL_URL = "https://api.replicate.com/v1/models/cjwbw/animagine-xl-3.1/predictions?wait=true"
 
     @staticmethod
     async def render(prompt: str, negative_prompt: str, agent_id: str,
                     width: int = 1024, height: int = 1024) -> bytes:
         
-        if not RenderService.HF_API_TOKEN:
-            raise Exception("HF_API_TOKEN environment variable not set on Render.")
+        if not RenderService.REPLICATE_API_TOKEN:
+            raise Exception("REPLICATE_API_TOKEN environment variable not set on Render.")
 
         headers = {
-            "Authorization": f"Bearer {RenderService.HF_API_TOKEN}",
+            "Authorization": f"Token {RenderService.REPLICATE_API_TOKEN}",
             "Content-Type": "application/json"
         }
         
-        # Animagine XL requires specific quality tags to trigger its best anime style
+        # Animagine XL requires specific quality tags
         quality_tags = "masterpiece, high quality, sharp focus, anime coloring, cel shading, official art"
         full_prompt = f"{quality_tags}, {prompt}"
         
         # SDXL standard negative prompt
         sd_negative = f"lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, 3d, photorealistic, {negative_prompt}"
         
-        # Generate a consistent seed based on agent_id so the same DNA always yields the same face
+        # Generate a consistent seed based on agent_id
         consistent_seed = int(hash(agent_id) % (2**32 - 1))
 
         payload = {
-            "inputs": full_prompt,
-            "parameters": {
+            "input": {
+                "prompt": full_prompt,
                 "negative_prompt": sd_negative,
                 "width": width,
                 "height": height,
@@ -2274,32 +2274,25 @@ class RenderService:
         }
 
         async with httpx.AsyncClient(timeout=120.0) as client:
-            logger.info(f"🎨 Calling Hugging Face (Animagine XL) for {agent_id}")
+            logger.info(f"🎨 Calling Replicate (Animagine XL) for {agent_id}")
             response = await client.post(
-                RenderService.HF_MODEL_URL, 
+                RenderService.REPLICATE_MODEL_URL, 
                 json=payload, 
                 headers=headers
             )
             
             if response.status_code == 200:
-                return response.content
-            
-            elif response.status_code == 503:
-                # Hugging Face free tier has "cold starts". If the model is asleep, it returns 503 with an estimated time.
-                try:
-                    error_data = response.json()
-                    estimated_time = error_data.get("estimated_time", 20)
-                    logger.warning(f"⏳ Model is loading on HF (cold start). Waiting {estimated_time:.1f}s...")
-                    await asyncio.sleep(estimated_time + 5)
-                    
-                    # Retry once after waiting
-                    response = await client.post(RenderService.HF_MODEL_URL, json=payload, headers=headers)
-                    if response.status_code == 200:
-                        return response.content
-                except Exception as e:
-                    logger.error(f"Failed to parse HF cold start wait time: {e}")
-            
-            raise Exception(f"HF API failed: {response.status_code} - {response.text[:200]}")
+                data = response.json()
+                # Replicate returns a list of URLs in the output
+                if "output" in data and isinstance(data["output"], list) and len(data["output"]) > 0:
+                    image_url = data["output"][0]
+                    logger.info(f"️ Downloading generated image from {image_url}")
+                    img_res = await client.get(image_url)
+                    return img_res.content
+                else:
+                    raise Exception(f"Replicate returned invalid output format: {data}")
+            else:
+                raise Exception(f"Replicate API failed: {response.status_code} - {response.text}")
 
 # ─── ACTION DNA DELTA CALCULATION ─────────────────────────────────────────────
 
