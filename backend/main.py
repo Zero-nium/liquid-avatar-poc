@@ -2231,57 +2231,59 @@ def build_prompt_payload(agent_id: str, preference_dna: Dict, action_dna: Dict) 
 
 class RenderService:
     """
-    Abstracted render service. 
-    Using Replicate for Animagine XL 3.1 (version-specific endpoint).
+    Abstracted render service using Replicate.
+    Uses Animagine XL 3.1 for high-quality anime avatars.
     """
     
     REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
-    # Specific version hash for cjwbw/animagine-xl-3.1
-    REPLICATE_VERSION = "6afe2e6b27dad2d6f480b59195c221884b6acc589ff4d05ff0e5fc058690fbb9"
     REPLICATE_API_URL = "https://api.replicate.com/v1/predictions"
+    # Animagine XL 3.1 version hash
+    MODEL_VERSION = "6afe2e6b27dad2d6f480b59195c221884b6acc589ff4d05ff0e5fc058690fbb9"
 
     @staticmethod
     async def render(prompt: str, negative_prompt: str, agent_id: str,
-                    width: int = 1024, height: int = 1024) -> bytes:
-        
+                    width: int = 512, height: int = 512) -> bytes:
+        """
+        Call Replicate API and return image bytes.
+        """
         if not RenderService.REPLICATE_API_TOKEN:
-            raise Exception("REPLICATE_API_TOKEN environment variable not set on Render.")
+            raise Exception("REPLICATE_API_TOKEN environment variable not set")
 
         headers = {
             "Authorization": f"Token {RenderService.REPLICATE_API_TOKEN}",
             "Content-Type": "application/json"
         }
         
-        # Animagine XL requires specific quality tags
-        quality_tags = "masterpiece, high quality, sharp focus, anime coloring, cel shading, official art"
+        # Add quality tags for better anime output
+        quality_tags = "masterpiece, best quality, highres, anime style"
         full_prompt = f"{quality_tags}, {prompt}"
         
-        # SDXL standard negative prompt
+        # Standard negative prompt for anime
         sd_negative = f"lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, 3d, photorealistic, {negative_prompt}"
         
-        # Generate a consistent seed based on agent_id
+        # Generate consistent seed from agent_id
         consistent_seed = int(hash(agent_id) % (2**32 - 1))
 
         payload = {
-            "version": RenderService.REPLICATE_VERSION,
+            "version": RenderService.MODEL_VERSION,
             "input": {
                 "prompt": full_prompt,
                 "negative_prompt": sd_negative,
                 "width": width,
                 "height": height,
-                "num_inference_steps": 28,
-                "guidance_scale": 7.0,
+                "num_inference_steps": 25,
+                "guidance_scale": 7.5,
                 "seed": consistent_seed
             }
         }
 
         async with httpx.AsyncClient(timeout=120.0) as client:
-            logger.info(f"🎨 Calling Replicate (Animagine XL v3.1) for {agent_id}")
+            logger.info(f"🎨 Calling Replicate API for {agent_id}")
             
-            # Step 1: Create the prediction
+            # Create prediction
             response = await client.post(
-                RenderService.REPLICATE_API_URL, 
-                json=payload, 
+                RenderService.REPLICATE_API_URL,
+                json=payload,
                 headers=headers
             )
             
@@ -2294,10 +2296,10 @@ class RenderService:
             if not prediction_id:
                 raise Exception(f"No prediction ID returned: {prediction}")
             
-            logger.info(f"⏳ Prediction created: {prediction_id}, waiting for completion...")
+            logger.info(f"⏳ Prediction created: {prediction_id}, polling for completion...")
             
-            # Step 2: Poll for completion
-            max_wait = 90  # seconds
+            # Poll for completion
+            max_wait = 90
             waited = 0
             poll_interval = 2
             
@@ -2306,7 +2308,7 @@ class RenderService:
                 waited += poll_interval
                 
                 status_response = await client.get(
-                    f"https://api.replicate.com/v1/predictions/{prediction_id}",
+                    f"{RenderService.REPLICATE_API_URL}/{prediction_id}",
                     headers=headers
                 )
                 
@@ -2323,9 +2325,12 @@ class RenderService:
                     output = status_data.get("output")
                     if output and isinstance(output, list) and len(output) > 0:
                         image_url = output[0]
-                        logger.info(f"✅ Downloading generated image from {image_url}")
+                        logger.info(f"✅ Downloading image from {image_url}")
                         img_res = await client.get(image_url)
-                        return img_res.content
+                        if img_res.status_code == 200:
+                            return img_res.content
+                        else:
+                            raise Exception(f"Failed to download image: {img_res.status_code}")
                     else:
                         raise Exception(f"Prediction succeeded but no output: {status_data}")
                 
@@ -2873,14 +2878,35 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
         image_url_to_store = relative_url
         schema_sig = {"mock": mock, "fallback": not use_fallback, "hue": hue, "complexity": complexity, "source": "local_svg"}
     else:
-        # 8. Try Pollinations.ai
-        max_retries = 3
-        retry_delay = 3.0
-        
-        for attempt in range(max_retries):
-            try:
-                await wait_for_rate_limit()
-                async with httpx.AsyncClient(timeout=45.0) as client:
+        # 8. Try Replicate API (Animagine XL 3.1)
+        try:
+            logger.info(f"🎨 Generating avatar via Replicate for {agent_id}")
+            
+            # RenderService handles the API call, polling, and downloading the bytes
+            image_bytes = await RenderService.render(
+                prompt=prompt,
+                negative_prompt="lowres, bad anatomy, bad hands, text, error, worst quality, low quality, 3d, photorealistic",
+                agent_id=agent_id,
+                width=512,
+                height=512
+            )
+            
+            # Save bytes to disk
+            with open(file_path, "wb") as f:
+                f.write(image_bytes)
+                
+            image_generated = True
+            image_url_to_store = relative_url
+            schema_sig = {"hue": hue, "complexity": complexity, "source": "replicate"}
+            logger.info(f"✅ Avatar generated via Replicate and saved to disk for {agent_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Replicate render failed for {agent_id}: {str(e)}")
+            # If fallback is disabled, raise error immediately
+            if not use_fallback:
+                await conn.close()
+                raise HTTPException(status_code=500, detail=f"Image generation failed: {str(e)}")
+            # If use_fallback is True, it will naturally fall through to Step 9 (Local SVG)
                     safe_prompt = urllib.parse.quote(f"anime portrait, {prompt}, clean background, high quality")
                     img_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=256&height=256&nologo=true&seed={agent_id}"
                     
