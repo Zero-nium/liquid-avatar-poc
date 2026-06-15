@@ -2769,13 +2769,29 @@ async def get_cached_avatar(agent_id: str):
     render = await run_query(conn,
         "SELECT image_url, schema_signature, rendered_at FROM avatar_renders WHERE agent_id = ?",
         (agent_id,), fetch="one")
-    await conn.close()
     
     if not render:
+        await conn.close()
         raise HTTPException(status_code=404, detail="No cached render found")
+
+    image_url = render["image_url"]
+    # Extract filename from URL (e.g., "/storage/avatars/xxx.png" -> "xxx.png")
+    filename = image_url.split("/")[-1]
+    file_path = os.path.join(STORAGE_DIR, filename)
     
+    # CRITICAL: Check if file actually exists on disk (Render free tier wipes files on deploy)
+    if not os.path.exists(file_path):
+        # File is missing! Delete the DB record so the frontend knows to re-render
+        await run_query(conn, "DELETE FROM avatar_renders WHERE agent_id = ?", (agent_id,))
+        if hasattr(conn, 'commit'):
+            await conn.commit()
+        await conn.close()
+        logger.warning(f"⚠️ Avatar file missing for {agent_id}. Cleared DB record.")
+        raise HTTPException(status_code=404, detail="Avatar file missing on disk")
+
+    await conn.close()
     return {
-        "imageUrl": render["image_url"],
+        "imageUrl": image_url,
         "renderedAt": render["rendered_at"],
         "schemaSignature": json.loads(render["schema_signature"])
     }

@@ -257,13 +257,29 @@ async function renderAnimeFrame() {
 
     const cachedUrl = await window.AISystem?.getCachedAvatar?.(d.id);
 
-    if (cachedUrl) {
+    if (cachedUrl && cachedUrl !== 'NOT_FOUND') {
       const img = new Image();
       img.src = cachedUrl;
-      if (img.complete) {
+      
+      // Check if image is already loaded and valid (naturalWidth > 0 means it's not a broken 404)
+      if (img.complete && img.naturalWidth > 0) {
         ctx.drawImage(img, d.x - size, d.y - size, size * 2, size * 2);
       } else {
-        img.onload = () => ctx.drawImage(img, d.x - size, d.y - size, size * 2, size * 2);
+        img.onload = () => {
+          if (img.naturalWidth > 0) {
+            ctx.drawImage(img, d.x - size, d.y - size, size * 2, size * 2);
+          }
+        };
+        img.onerror = () => {
+          // Image failed to load (404). Clear it from cache so we stop trying every frame!
+          console.warn(`❌ Image failed to load for ${d.id}. Clearing cache.`);
+          if (window.AISystem?.memoryCache) {
+            window.AISystem.memoryCache.delete(d.id);
+          }
+          if (window.AvatarCache?.clear) {
+            window.AvatarCache.clear(d.id);
+          }
+        };
       }
     } else {
       // Pastel pink placeholder
