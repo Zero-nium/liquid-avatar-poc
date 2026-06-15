@@ -2783,9 +2783,8 @@ async def get_cached_avatar(agent_id: str):
 @app.post("/api/avatars/{agent_id}/generate")
 async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool = True, force: bool = False):
     """
-    Legacy avatar generation endpoint.
-    First checks for Dual-DNA and uses that if available.
-    Falls back to simple prompt-based generation if no DNA.
+    Generates and stores an avatar for the given agent.
+    If force=True, bypasses cache and re-renders.
     """
     conn = await get_db()
     
@@ -2798,7 +2797,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
             if os.path.exists(file_path):
                 os.remove(file_path)
     else:
-        # 2. Check persistent DB cache first
+        # 2. Check persistent DB cache first (UNLESS force is True)
         cached = await run_query(conn,
             "SELECT image_url, schema_signature FROM avatar_renders WHERE agent_id = ?",
             (agent_id,), fetch="one")
@@ -2807,18 +2806,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
             await conn.close()
             return {"imageUrl": cached["image_url"], "status": "cached"}
     
-    # 3. Check if Dual-DNA exists - if so, delegate to DNA-based renderer
-    dna_row = await run_query(conn,
-        "SELECT preference_dna, action_dna FROM agent_dna WHERE agent_id = ?",
-        (agent_id,), fetch="one")
-    
-    if dna_row:
-        await conn.close()
-        # Delegate to DNA-based renderer
-        logger.info(f"🧬 Dual-DNA found for {agent_id}, using DNA-based renderer")
-        return await render_agent_avatar_dna(agent_id, force=force)
-    
-    # 4. Legacy path: Get agent data for simple prompt construction
+    # 3. Get agent data for prompt construction
     agent = await run_query(conn, "SELECT * FROM agents WHERE agent_id = ?", (agent_id,), fetch="one")
     avatar_state = await run_query(conn,
         "SELECT * FROM avatar_states WHERE agent_id = ? ORDER BY computed_at DESC LIMIT 1",
@@ -2833,12 +2821,12 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
     role = agent["role"] or "general"
     dynamics = avatar_state["dynamics_state"] if avatar_state else "idle"
     
-    # Determine file extension
+    # Determine file extension based on generation method
     file_ext = "svg" if mock or not use_fallback else "png"
     file_path = os.path.join(STORAGE_DIR, f"{agent_id}.{file_ext}")
     relative_url = f"/storage/avatars/{agent_id}.{file_ext}"
     
-    # 5. Double-check if file already exists on disk
+    # 4. Double-check if file already exists on disk
     if os.path.exists(file_path):
         await run_query(conn, """
             INSERT OR REPLACE INTO avatar_renders (id, agent_id, image_url, schema_signature, rendered_at)
@@ -2851,7 +2839,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
         await conn.close()
         return {"imageUrl": relative_url, "status": "cached"}
     
-    # 6. Build simple prompt
+    # 5. Build prompt based on agent attributes
     hair_styles = {3: "short cropped", 5: "bob cut", 6: "medium length", 8: "long layered", 10: "elaborate braided", 12: "flowing twin tails"}
     hair = hair_styles.get(complexity, "medium length")
     expressions = {"idle": "soft neutral", "output": "bright smile", "input": "focused gaze", "analysis": "thoughtful look"}
@@ -2868,7 +2856,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
     image_url_to_store = ""
     schema_sig = {}
     
-    # 7. Mock mode or Forced Fallback mode: Generate SVG
+    # 6. Mock mode or Forced Fallback mode: Generate SVG
     if mock or not use_fallback:
         logger.warning(f"🎭 Mock/Fallback mode for {agent_id}")
         svg = generate_local_avatar_svg(agent_id, hue, 0.7, complexity, agent["name"])
@@ -2878,34 +2866,16 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
         image_url_to_store = relative_url
         schema_sig = {"mock": mock, "fallback": not use_fallback, "hue": hue, "complexity": complexity, "source": "local_svg"}
     else:
-        # 8. Try Replicate API (Animagine XL 3.1)
-        try:
-            logger.info(f"🎨 Generating avatar via Replicate for {agent_id}")
-            
-            # RenderService handles the API call, polling, and downloading the bytes
-            image_bytes = await RenderService.render(
-                prompt=prompt,
-                negative_prompt="lowres, bad anatomy, bad hands, text, error, worst quality, low quality, 3d, photorealistic",
-                agent_id=agent_id,
-                width=512,
-                height=512
-            )
-            
-            # Save bytes to disk
-            with open(file_path, "wb") as f:
-                f.write(image_bytes)
-                
-            image_generated = True
-            image_url_to_store = relative_url
-            schema_sig = {"hue": hue, "complexity": complexity, "source": "replicate"}
-            logger.info(f"✅ Avatar generated via Replicate and saved to disk for {agent_id}")
-            
-        except Exception as e:
-            logger.error(f"❌ Replicate render failed for {agent_id}: {str(e)}")
-            # If fallback is disabled, raise error immediately
-            if not use_fallback:
-                await conn.close()
-                raise HTTPException(status_code=500, detail=f"Image generation failed: {str(e)}")
+        # 7. Try Pollinations.ai with rate limiting and retry logic
+        max_retries = 3
+        retry_delay = 3.0
+        
+        for attempt in range(max_retries):
+            try:
+                await wait_for_rate_limit()
+                async with httpx.AsyncClient(timeout=45.0) as client:
+                    safe_prompt = urllib.parse.quote(f"anime portrait, {prompt}, clean background, high quality")
+                    img_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=256&height=256&nologo=true&seed={agent_id}"
                     
                     logger.info(f"🎨 Fetching avatar from Pollinations.ai for {agent_id} (attempt {attempt+1}/{max_retries})")
                     img_res = await client.get(img_url)
@@ -2949,7 +2919,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
                     if not use_fallback:
                         raise HTTPException(status_code=503, detail=f"External service unavailable: {str(e)}")
         
-        # 9. Fallback to local SVG
+        # 8. Fallback to local SVG if Pollinations failed but use_fallback is True
         if not image_generated and use_fallback:
             logger.warning(f"🔄 Falling back to local SVG generation for {agent_id}")
             file_path = os.path.join(STORAGE_DIR, f"{agent_id}.svg")
@@ -2961,7 +2931,7 @@ async def generate_avatar(agent_id: str, mock: bool = False, use_fallback: bool 
             image_url_to_store = relative_url
             schema_sig = {"fallback": True, "hue": hue, "complexity": complexity, "source": "local_svg"}
     
-    # 10. Final DB update
+    # 9. Final DB update
     if image_generated:
         await run_query(conn, """
             INSERT OR REPLACE INTO avatar_renders (id, agent_id, image_url, schema_signature, rendered_at)
